@@ -7,6 +7,7 @@ import subprocess
 import requests
 from g4f.client import Client
 import edge_tts
+from gtts import gTTS
 from PIL import Image, ImageDraw, ImageFont
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 # Google API Imports
@@ -426,10 +427,24 @@ def generate_male_voice(text, output_audio_path):
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(_save())
                 loop.close()
-                success = True
+                if os.path.exists(part_filename) and os.path.getsize(part_filename) >= 4000:
+                    success = True
+                else:
+                    raise Exception("Edge TTS ne khali/chhoti audio di")
             except Exception as e:
-                print(f"❌ Part {idx} generation completely failed: {e}")
-                return False
+                print(f"⚠️ Edge TTS Part {idx} fail ({e}). Ab gTTS (Google) try kar rahe hain...")
+                try:
+                    tts = gTTS(text=chunk, lang="hi")
+                    tts.save(part_filename)
+                    if os.path.exists(part_filename) and os.path.getsize(part_filename) >= 4000:
+                        success = True
+                        print(f"✅ Part {idx} gTTS se ban gaya.")
+                    else:
+                        raise Exception("gTTS ne bhi khali/chhoti audio di")
+                except Exception as e2:
+                    print(f"❌ Part {idx} generation completely failed (OpenAI.fm + Edge TTS + gTTS teeno fail): {e2}")
+                    notify_telegram(f"❌ Awaaz (TTS) fail ho gayi — OpenAI.fm, Edge TTS aur gTTS teeno fail (Part {idx}).")
+                    return False
         
         audio_parts.append(part_filename)
     
@@ -743,10 +758,11 @@ def main():
                 
                 # 2. Audio Generation
                 script_text = ai_data.get("video_script", "")
+                audio_ok = False
                 if script_text:
-                    generate_male_voice(script_text, audio_file)
-                    
-                    if os.path.exists(audio_file):
+                    audio_ok = generate_male_voice(script_text, audio_file)
+
+                    if audio_ok and os.path.exists(audio_file):
                         audio_duration = get_audio_duration(audio_file)
                         
                         # 3. Web Recording
@@ -766,7 +782,10 @@ def main():
                         else:
                             notify_telegram("❌ Video build fail ho gaya, YouTube upload skip.")
 
-                print("\n✅ Entire Automation Finished Successfully!")
+                if audio_ok:
+                    print("\n✅ Entire Automation Finished Successfully!")
+                else:
+                    print("\n⚠️ Automation ruk gaya: audio nahi ban paayi, isliye video/upload skip hua.")
             else:
                 print("❌ Failed to generate AI script package.")
                 notify_telegram("❌ AI script generation fail ho gaya, video nahi banaya.")
