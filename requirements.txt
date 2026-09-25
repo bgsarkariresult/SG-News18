@@ -1,0 +1,9 @@
+requests
+g4f
+edge-tts
+Pillow
+playwright
+google-auth-oauthlib
+google-auth
+google-api-python-client
+google-genai
