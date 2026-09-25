@@ -79,10 +79,13 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
-      - name: YouTube credentials taiyaar karo (secrets se)
+      - name: YouTube credentials taiyaar karo (secrets se, seedha JSON paste kiya hua)
+        env:
+          CLIENT_SECRETS_JSON: ${{ secrets.YT_CLIENT_SECRETS_JSON }}
+          TOKEN_JSON: ${{ secrets.YT_TOKEN_JSON }}
         run: |
-          echo "${{ secrets.YT_CLIENT_SECRETS_B64 }}" | base64 -d > client_secrets.json
-          echo "${{ secrets.YT_TOKEN_JSON_B64 }}" | base64 -d > token.json
+          printf '%s' "$CLIENT_SECRETS_JSON" > client_secrets.json
+          printf '%s' "$TOKEN_JSON" > token.json
 
       - name: Video banao aur YouTube pe upload karo
         env:
