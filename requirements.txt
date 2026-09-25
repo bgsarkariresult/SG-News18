@@ -1,6 +1,7 @@
 requests
 g4f
 edge-tts
+gTTS
 Pillow
 playwright
 google-auth-oauthlib
