@@ -16,34 +16,32 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-
 # Gemini Imports
 from google import genai
 from google.genai import types
+# Groq Import
+from groq import Groq
 
 # ==========================================
 # 1. Configuration & Setup
 # ==========================================
-client = Client()  # g4f (2nd option)
+client = Client()  # g4f (last fallback)
 
 # ==========================================
 # Gemini Setup (PRIMARY) — 3 API KEY ROTATION
-# 1 key fail (quota/error) ho to agla key khud try hota hai
 # ==========================================
 GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_1", "").strip(),
     os.getenv("GEMINI_API_KEY_2", "").strip(),
     os.getenv("GEMINI_API_KEY_3", "").strip(),
 ]
-GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]  # sirf khali nahi wale keys
+GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]
 
 if not GEMINI_API_KEYS:
     print("⚠️ Warning: Koi bhi GEMINI_API_KEY_1/2/3 nahi mila. GitHub Secrets check karo!")
 
-# Model ka naam env se (config driven), hard-code nahi
 GEMINI_MODELS = [os.getenv("GEMINI_MODEL_NAME", "gemini-3.6-flash")]
 
-# Har key ke liye ek Gemini client bana lo (jo bhi valid hai)
 GEMINI_CLIENTS = []
 for idx, key in enumerate(GEMINI_API_KEYS, start=1):
     try:
@@ -51,19 +49,33 @@ for idx, key in enumerate(GEMINI_API_KEYS, start=1):
     except Exception as e:
         print(f"⚠️ GEMINI_API_KEY_{idx} se client banane me error: {e}")
 
+# ==========================================
+# Groq Setup (SECONDARY FALLBACK)
+# ==========================================
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_CLIENT = None
+GROQ_MODELS = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
+
+if GROQ_API_KEY:
+    try:
+        GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
+        print("✅ Groq client ready (fallback)")
+    except Exception as e:
+        print(f"⚠️ Groq client banane me error: {e}")
+else:
+    print("⚠️ GROQ_API_KEY nahi mila.")
+
 SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
 MAX_CHUNK_CHARACTERS = 1000
 MAX_RETRIES = 2
 
 # ==========================================
-# Telegram Notifier — status + errors dono bhejta hai
+# Telegram Notifier
 # ==========================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 def notify_telegram(message: str):
-    """GitHub Actions ke runner se seedha Telegram par message bhejta hai.
-    Agar token/chat id set nahi hai to chup-chaap skip karega (crash nahi karega)."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
@@ -78,7 +90,6 @@ def notify_telegram(message: str):
         print(f"⚠️ Telegram notify failed: {e}")
 
 def check_ffmpeg_codecs():
-    """Check if FFmpeg supports required codecs"""
     try:
         cmd = ["ffmpeg", "-codecs"]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -92,7 +103,6 @@ def check_ffmpeg_codecs():
         return False
 
 def get_youtube_service():
-    """YouTube API OAuth Authentication Setup"""
     creds = None
     token_file = 'token.json'
     
@@ -119,9 +129,6 @@ def get_youtube_service():
 # 2. GitHub Pages Dynamic Article Scraper
 # ==========================================
 def extract_github_article_content(url):
-    """
-    Playwright base scraper for dynamic GitHub Pages Articles (article.html?id=...)
-    """
     print(f"🔍 Scraping dynamic content from GitHub Pages: {url}")
     
     title_text = ""
@@ -132,11 +139,9 @@ def extract_github_article_content(url):
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             
-            # Load page and wait for JS rendering
             page.goto(url, wait_until="networkidle", timeout=30000)
-            page.wait_for_timeout(2000)  # Extra buffer for dynamic JS injection
+            page.wait_for_timeout(2000)
             
-            # 1. Extract Title
             title_selectors = ['h1', 'h2', '.article-title', '#article-title', '.post-title', '#title']
             for selector in title_selectors:
                 if page.locator(selector).count() > 0:
@@ -147,7 +152,6 @@ def extract_github_article_content(url):
             if not title_text:
                 title_text = page.title() or "Important News Update"
                 
-            # 2. Extract Full Content Body
             body_selectors = ['#article-content', '.article-content', '.post-body', 'article', 'main', '.content']
             found_body = False
             
@@ -158,7 +162,6 @@ def extract_github_article_content(url):
                         found_body = True
                         break
             
-            # Fallback if specific containers aren't found
             if not found_body:
                 paragraphs = page.locator('p, li, td, h2, h3').all_inner_texts()
                 content_text = "\n".join([p.strip() for p in paragraphs if len(p.strip()) > 10])
@@ -242,7 +245,7 @@ def generate_news_script(title, content, max_retries=3):
     }}
     """
 
-    # ========== PRIMARY: Gemini — 3 KEY ROTATION + model fallback ==========
+    # ========== 1. PRIMARY: Gemini ==========
     if GEMINI_CLIENTS:
         for model in GEMINI_MODELS:
             for key_label, gclient in GEMINI_CLIENTS:
@@ -256,11 +259,9 @@ def generate_news_script(title, content, max_retries=3):
                                 response_mime_type="application/json"
                             )
                         )
-
                         raw_text = response.text.strip()
                         clean_json = re.sub(r'^```json\s*|\s*```$', '', raw_text, flags=re.MULTILINE)
                         data = json.loads(clean_json)
-
                         script = data.get("video_script", "")
                         if script and len(script) > 400 and any('\u0900' <= c <= '\u097F' for c in script):
                             print(f"✅ Script generated successfully with {key_label} ({model})!")
@@ -269,45 +270,75 @@ def generate_news_script(title, content, max_retries=3):
                             print(f"⚠️ {key_label} ({model}) script short/invalid language. Retrying...")
                     except Exception as e:
                         print(f"⚠️ Gemini {key_label} ({model}) Attempt {attempt} failed ({e}).")
-                        time.sleep(2 ** attempt)  # Exponential backoff
-                # is key se kaam nahi bana -> agli key try karo
-                print(f"➡️ {key_label} fail ho gayi, agli key try kar rahe hain (agar available ho)...")
+                        time.sleep(2 ** attempt)
+                print(f"➡️ {key_label} fail ho gayi, agli key try kar rahe hain...")
                 notify_telegram(f"⚠️ Gemini {key_label} fail ho gayi, agli key try ho rahi hai...")
     else:
         print("⚠️ Koi Gemini client initialize nahi hua (keys missing). Skipping Gemini...")
-        notify_telegram("⚠️ Gemini ki teeno API keys missing/invalid hain, g4f fallback try ho raha hai.")
+        notify_telegram("⚠️ Gemini keys missing, Groq try ho raha hai...")
 
-    # ========== SECONDARY OPTION: g4f (gpt-4o-mini) ==========
-    print("🔄 Gemini failed. Switching to g4f (gpt-4o-mini) as 2nd option...")
+    # ========== 2. SECONDARY: Groq ==========
+    if GROQ_CLIENT:
+        print("🔄 Gemini failed. Switching to Groq...")
+        notify_telegram("🔄 Gemini fail, ab Groq try ho raha hai...")
+        for model in GROQ_MODELS:
+            for attempt in range(1, max_retries + 1):
+                try:
+                    print(f"🔄 AI Generation Attempt {attempt}/{max_retries} (Groq - {model})...")
+                    response = GROQ_CLIENT.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.7,
+                        max_tokens=4096,
+                        response_format={"type": "json_object"}
+                    )
+                    raw_text = response.choices[0].message.content.strip()
+                    clean_json = re.sub(r'^```json\s*|\s*```$', '', raw_text, flags=re.MULTILINE)
+                    data = json.loads(clean_json)
+                    script = data.get("video_script", "")
+                    if script and len(script) > 400 and any('\u0900' <= c <= '\u097F' for c in script):
+                        print(f"✅ Script generated successfully with Groq ({model})!")
+                        notify_telegram(f"✅ Script Groq se ban gaya ({model})")
+                        return data
+                    else:
+                        print(f"⚠️ Groq ({model}) script short/invalid. Retrying...")
+                except Exception as e:
+                    print(f"⚠️ Groq ({model}) Attempt {attempt} failed ({e}).")
+                    time.sleep(2 ** attempt)
+            print(f"➡️ Groq model {model} fail, agli model try...")
+        notify_telegram("⚠️ Groq bhi fail, ab g4f try ho raha hai...")
+    else:
+        print("⚠️ Groq client nahi hai. Skipping Groq...")
+
+    # ========== 3. LAST FALLBACK: g4f ==========
+    print("🔄 Gemini + Groq failed. Switching to g4f...")
     for attempt in range(1, max_retries + 1):
         try:
-            print(f"🔄 AI Generation Attempt {attempt}/{max_retries} (g4f secondary)...")
+            print(f"🔄 AI Generation Attempt {attempt}/{max_retries} (g4f)...")
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.75
             )
-            
             raw_text = response.choices[0].message.content.strip()
             clean_json = re.sub(r'^```json\s*|\s*```$', '', raw_text, flags=re.MULTILINE)
             data = json.loads(clean_json)
-            
             script = data.get("video_script", "")
             if script and len(script) > 400 and any('\u0900' <= c <= '\u097F' for c in script):
-                print("✅ Clickbait & Detailed SEO News Script generated successfully (g4f)!")
+                print("✅ Script generated successfully with g4f!")
                 return data
             else:
-                print(f"⚠️ Script short or invalid language. Retrying...")
+                print(f"⚠️ g4f script short/invalid. Retrying...")
         except Exception as e:
-            print(f"⚠️ g4f Attempt {attempt} failed ({e}). Retrying...")
+            print(f"⚠️ g4f Attempt {attempt} failed ({e}).")
             time.sleep(2)
             
-    print("❌ AI Generation Error: Failed after multiple retries (Gemini + g4f).")
-    notify_telegram("❌ <b>Script generation fail</b> ho gaya (Gemini 3 keys + g4f dono fail).")
+    print("❌ AI Generation Error: Gemini + Groq + g4f teeno fail.")
+    notify_telegram("❌ <b>Script generation fail</b> (Gemini + Groq + g4f teeno fail).")
     return None
 
 # ==========================================
-# 4. AI VOICE GENERATOR (OpenAI.fm Fable Voice + Fallback + Concatenation)
+# 4. AI VOICE GENERATOR
 # ==========================================
 def split_script_into_chunks(script, max_chars=MAX_CHUNK_CHARACTERS):
     paragraphs = [p.strip() for p in script.split('\n\n') if p.strip()]
@@ -343,12 +374,6 @@ def split_script_into_chunks(script, max_chars=MAX_CHUNK_CHARACTERS):
     return chunks
 
 def generate_fable_voice_openai_fm(text_chunk, output_path):
-    """
-    Direct call to openai.fm/api/generate (requests-based).
-    Faster and more reliable than browser automation — no CAPTCHA/UI-selector
-    breakage risk. Falls back to Edge TTS automatically if this fails
-    (handled in generate_male_voice below).
-    """
     try:
         url = "https://www.openai.fm/api/generate"
         headers = {
@@ -364,7 +389,6 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
             "vibe": (None, "audio")
         }
         response = requests.post(url, files=files, headers=headers, timeout=90, stream=True)
-        # Fallback to GET if POST fails
         if response.status_code != 200:
             params = {
                 "input": text_chunk,
@@ -381,8 +405,8 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
                 if chunk:
                     f.write(chunk)
         file_size = os.path.getsize(output_path)
-        if file_size < 8000:  # roughly less than 0.5 second of speech
-            raise Exception(f"Downloaded audio too small ({file_size} bytes) — incomplete response")
+        if file_size < 8000:
+            raise Exception(f"Downloaded audio too small ({file_size} bytes)")
         print("✅ OpenAI.fm audio saved successfully")
         return True
     except Exception as e:
@@ -432,7 +456,7 @@ def generate_male_voice(text, output_audio_path):
                 else:
                     raise Exception("Edge TTS ne khali/chhoti audio di")
             except Exception as e:
-                print(f"⚠️ Edge TTS Part {idx} fail ({e}). Ab gTTS (Google) try kar rahe hain...")
+                print(f"⚠️ Edge TTS Part {idx} fail ({e}). Ab gTTS try kar rahe hain...")
                 try:
                     tts = gTTS(text=chunk, lang="hi")
                     tts.save(part_filename)
@@ -442,14 +466,14 @@ def generate_male_voice(text, output_audio_path):
                     else:
                         raise Exception("gTTS ne bhi khali/chhoti audio di")
                 except Exception as e2:
-                    print(f"❌ Part {idx} generation completely failed (OpenAI.fm + Edge TTS + gTTS teeno fail): {e2}")
-                    notify_telegram(f"❌ Awaaz (TTS) fail ho gayi — OpenAI.fm, Edge TTS aur gTTS teeno fail (Part {idx}).")
+                    print(f"❌ Part {idx} completely failed: {e2}")
+                    notify_telegram(f"❌ Awaaz fail — OpenAI.fm + Edge TTS + gTTS teeno fail (Part {idx}).")
                     return False
         
         audio_parts.append(part_filename)
     
     if audio_parts:
-        print("🔗 Concatenating and Merging All Audio Parts with FFmpeg...")
+        print("🔗 Concatenating audio with FFmpeg...")
         list_file = os.path.join(temp_dir, "concat_list.txt")
       
         with open(list_file, "w", encoding="utf-8") as f:
@@ -466,7 +490,7 @@ def generate_male_voice(text, output_audio_path):
                 '-y', output_audio_path
             ]
             subprocess.run(cmd_concat, capture_output=True, check=True)
-            print(f"🔊 Final Audio merged successfully: {output_audio_path}")
+            print(f"🔊 Final Audio merged: {output_audio_path}")
             return True
         except Exception as e:
             print(f"❌ Audio Joining Error: {e}")
@@ -512,8 +536,6 @@ def record_website_video(url, output_clip_path, target_duration):
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
             
             page.wait_for_timeout(3000)
-            
-            # Apply Zoom and Highlight
             page.evaluate("document.body.style.zoom = '1.4'")
             page.wait_for_timeout(1000)
             
@@ -535,7 +557,6 @@ def record_website_video(url, output_clip_path, target_duration):
             """
             page.evaluate(js_code, keywords_to_highlight)
             
-            # Start Recording & Auto-scroll
             print("🔴 Recording started...")
             start_time = time.time()
             max_duration = min(target_duration, 300)
@@ -708,26 +729,21 @@ def main():
     print("=" * 50)
     print("🎬 SG News18 - GitHub Article News Video Automation")
     print("=" * 50)
-
     check_ffmpeg_codecs()
-
-    # GitHub Actions ke liye: URL env var (ARTICLE_URL) se ya command line arg se aata hai.
-    # Agar dono nahi mile (jaise local test), tab hi manually poochega.
+    
     import sys
     post_url = os.getenv("ARTICLE_URL", "").strip()
     if not post_url and len(sys.argv) > 1:
         post_url = sys.argv[1].strip()
     if not post_url:
         post_url = input("\n🔗 Enter GitHub Pages Article URL: ").strip()
-
+    
     notify_telegram(f"🚀 <b>News automation shuru hua</b>\n🔗 {post_url}")
-
+    
     if post_url:
         blog_title, blog_content = extract_github_article_content(post_url)
-
         if not blog_content or len(blog_content) <= 50:
             notify_telegram(f"❌ Content extract nahi hua ya bahut chhota tha.\n🔗 {post_url}")
-
         if blog_content and len(blog_content) > 50:
             ai_data = generate_news_script(blog_title, blog_content)
             
@@ -745,7 +761,7 @@ def main():
                 selected_title = titles[0] if isinstance(titles, list) and titles else blog_title
                 seo_desc = f"{ai_data.get('seo_description', '')}\n\n{ai_data.get('hashtags', '')}"
                 tags = ai_data.get('tags', '')
-                # 1. Save Text Package
+                
                 with open(txt_file, "w", encoding="utf-8") as f:
                     f.write("=== NEWS VIDEO CONTENT PACKAGE ===\n\n")
                     f.write(f"📌 SELECTED TITLE: {selected_title}\n\n")
@@ -756,19 +772,15 @@ def main():
                 
                 print(f"🎉 Text Package Saved: {txt_file}")
                 
-                # 2. Audio Generation
                 script_text = ai_data.get("video_script", "")
                 audio_ok = False
                 if script_text:
                     audio_ok = generate_male_voice(script_text, audio_file)
-
                     if audio_ok and os.path.exists(audio_file):
                         audio_duration = get_audio_duration(audio_file)
                         
-                        # 3. Web Recording
                         record_website_video(post_url, web_clip_path, audio_duration)
                         
-                        # 4. FFmpeg Video Building
                         video_created = build_video_ffmpeg(audio_file, web_clip_path, video_file, selected_title)
                         
                         if os.path.exists(web_clip_path):
@@ -776,26 +788,24 @@ def main():
                                 os.remove(web_clip_path)
                             except:
                                 pass
-                        # 5. YouTube Upload
+                        
                         if video_created and os.path.exists(video_file):
                             upload_to_youtube(video_file, selected_title, seo_desc, tags)
                         else:
                             notify_telegram("❌ Video build fail ho gaya, YouTube upload skip.")
-
                 if audio_ok:
                     print("\n✅ Entire Automation Finished Successfully!")
                 else:
-                    print("\n⚠️ Automation ruk gaya: audio nahi ban paayi, isliye video/upload skip hua.")
+                    print("\n⚠️ Automation ruk gaya: audio nahi ban paayi.")
             else:
                 print("❌ Failed to generate AI script package.")
-                notify_telegram("❌ AI script generation fail ho gaya, video nahi banaya.")
+                notify_telegram("❌ AI script generation fail ho gaya.")
         else:
             print("❌ Content extraction failed or text too short.")
             notify_telegram(f"❌ Article scrape fail/short content.\n🔗 {post_url}")
     else:
         print("⚠️ No URL provided.")
         notify_telegram("⚠️ Koi article URL provide nahi hui.")
-
 
 if __name__ == "__main__":
     try:
