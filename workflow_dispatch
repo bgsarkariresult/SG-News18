@@ -1,0 +1,11 @@
+on:
+  workflow_dispatch:
+    inputs:
+      link:
+        description: 'Video / topic link'
+        required: true
+        type: string
+      title:
+        description: 'Optional title'
+        required: false
+        type: string
