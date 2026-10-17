@@ -63,8 +63,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: System deps (ffmpeg)
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: System deps (ffmpeg + Hindi fonts for video overlays)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-core
 
       - name: Python deps install
         run: |

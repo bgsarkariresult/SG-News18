@@ -22,10 +22,20 @@ from google.genai import types
 # Groq Import
 from groq import Groq
 
+# Voice-synced foreground visuals (optional: agar load na ho to purana video build chalega)
+try:
+    import video_scenes
+except Exception as _vs_err:
+    video_scenes = None
+    print(f"⚠️ video_scenes load nahi hua ({_vs_err}). Purana video build use hoga.")
+
 # ==========================================
 # 1. Configuration & Setup
 # ==========================================
 client = Client()  # g4f (last fallback)
+
+# Har voice part ka (text, duration) — scene timing ke liye generate_male_voice() bharta hai
+VOICE_CHUNK_INFO = []
 
 # ==========================================
 # Gemini Setup (PRIMARY) — 3 API KEY ROTATION
@@ -473,6 +483,13 @@ def generate_male_voice(text, output_audio_path):
         audio_parts.append(part_filename)
     
     if audio_parts:
+        # Scene timing ke liye har part ki asli length (concat ke baad parts delete ho jaate hain)
+        global VOICE_CHUNK_INFO
+        try:
+            VOICE_CHUNK_INFO = [(ch, get_audio_duration(p)) for ch, p in zip(chunks, audio_parts)]
+        except Exception as e:
+            VOICE_CHUNK_INFO = []
+            print(f"ℹ️ Voice part durations nahi mili ({e}); scene timing estimate se hogi.")
         print("🔗 Concatenating audio with FFmpeg...")
         list_file = os.path.join(temp_dir, "concat_list.txt")
       
@@ -559,7 +576,7 @@ def record_website_video(url, output_clip_path, target_duration):
             
             print("🔴 Recording started...")
             start_time = time.time()
-            max_duration = min(target_duration, 300)
+            max_duration = min(target_duration + 1.5, 900)   # pehle 300s cap tha -> background loop hota tha
             
             page_height = page.evaluate("document.body.scrollHeight")
             viewport_height = page.evaluate("window.innerHeight")
@@ -781,8 +798,29 @@ def main():
                         
                         record_website_video(post_url, web_clip_path, audio_duration)
                         
-                        video_created = build_video_ffmpeg(audio_file, web_clip_path, video_file, selected_title)
-                        
+                        # Naya: scrolling background ke upar voice-synced visuals. Fail ho to purana build.
+                        video_created = False
+                        if video_scenes is not None and os.path.exists(web_clip_path):
+                            try:
+                                article_images = video_scenes.extract_article_images(post_url)
+                                video_created = video_scenes.build_video_with_visuals(
+                                    audio_path=audio_file,
+                                    video_clip_path=web_clip_path,
+                                    output_video_path=video_file,
+                                    title=blog_title,
+                                    script=script_text,
+                                    article_images=article_images,
+                                    chunk_info=VOICE_CHUNK_INFO,
+                                    page_text=blog_content,
+                                )
+                            except Exception as e:
+                                print(f"⚠️ Visual overlay step fail: {e}")
+                                video_created = False
+                            if not video_created:
+                                notify_telegram("⚠️ Foreground visuals fail, simple scrolling video bana raha hoon.")
+                        if not video_created:
+                            video_created = build_video_ffmpeg(audio_file, web_clip_path, video_file, selected_title)
+
                         if os.path.exists(web_clip_path):
                             try:
                                 os.remove(web_clip_path)
