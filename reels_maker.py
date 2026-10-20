@@ -52,6 +52,7 @@ VOICE_SPEED = 1.10             # final voice speed (captions/scene timing isi se
 BG_SITE_URL = os.getenv("REEL_BG_URL", "https://bgnewswab.github.io/sgnewswab/index.html").strip()
 
 OUTPUT_DIR = "reel_outputs"
+LAST_UPLOAD_ERROR = ""   # upload fail hone ki wajah (Telegram message me jaati hai)
 
 # YouTube (SG News18 bot jaisi hi files: client_secrets.json + token.json)
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
@@ -511,9 +512,12 @@ def get_youtube_service():
         else:
             if os.getenv("GITHUB_ACTIONS") == "true":
                 print("❌ GitHub Actions par token.json valid nahi (YT_TOKEN_JSON_B64 secret check karo). Upload skip.")
+                global LAST_UPLOAD_ERROR
+                LAST_UPLOAD_ERROR = "token.json valid nahi (YT_TOKEN_JSON_B64 secret khali/purana)"
                 return None
             if not os.path.exists(CLIENT_SECRETS_FILE):
                 print("❌ client_secrets.json nahi mili. Upload skip.")
+                LAST_UPLOAD_ERROR = "client_secrets.json nahi mili"
                 return None
             flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_FILE, SCOPES)
             credentials = flow.run_local_server(port=0)
@@ -559,7 +563,9 @@ def upload_to_youtube(video_path, title, description=""):
         return video_id
 
     except Exception as e:
-        print(f"❌ YouTube Upload Error: {e}")
+        global LAST_UPLOAD_ERROR
+        LAST_UPLOAD_ERROR = f"{type(e).__name__}: {e}"
+        print(f"❌ YouTube Upload Error: {LAST_UPLOAD_ERROR}")
         return None
 
 
@@ -621,7 +627,7 @@ def main():
     if video_id:
         notify_telegram(f"✅ <b>Reel upload ho gaya (Unlisted)</b>\n🎬 {yt_title}\n🔗 https://youtube.com/shorts/{video_id}")
     else:
-        notify_telegram(f"✅ Reel ban gaya (YouTube upload nahi hua): {os.path.basename(final_video)}")
+        notify_telegram(f"✅ Reel ban gaya (YouTube upload nahi hua): {os.path.basename(final_video)}\n⚠️ Wajah: {LAST_UPLOAD_ERROR[:300] or 'pata nahi'}")
 
 
 if __name__ == "__main__":
