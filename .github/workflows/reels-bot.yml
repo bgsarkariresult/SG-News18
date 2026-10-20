@@ -28,13 +28,13 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: YouTube secrets -> files
+      - name: YouTube credentials (secrets se, seedha JSON paste kiya hua)
         env:
-          YT_CLIENT_SECRETS_B64: ${{ secrets.YT_CLIENT_SECRETS_B64 }}
-          YT_TOKEN_JSON_B64: ${{ secrets.YT_TOKEN_JSON_B64 }}
+          CLIENT_SECRETS_JSON: ${{ secrets.YT_CLIENT_SECRETS_JSON }}
+          TOKEN_JSON: ${{ secrets.YT_TOKEN_JSON }}
         run: |
-          echo "$YT_CLIENT_SECRETS_B64" | base64 -d > client_secrets.json
-          echo "$YT_TOKEN_JSON_B64" | base64 -d > token.json
+          printf '%s' "$CLIENT_SECRETS_JSON" > client_secrets.json
+          printf '%s' "$TOKEN_JSON" > token.json
 
       - name: Make reel
         env:
