@@ -1,0 +1,56 @@
+name: SG News18 - Reels Maker
+
+on:
+  workflow_dispatch:
+    inputs:
+      article_url:
+        description: "News article link (jaise https://bgnewswab.github.io/sgnewswab/article.html?id=112)"
+        required: true
+
+jobs:
+  make-reel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: System packages (ffmpeg + Hindi font + text shaping)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-core libraqm0
+
+      - name: Python packages
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: YouTube secrets -> files
+        env:
+          YT_CLIENT_SECRETS_B64: ${{ secrets.YT_CLIENT_SECRETS_B64 }}
+          YT_TOKEN_JSON_B64: ${{ secrets.YT_TOKEN_JSON_B64 }}
+        run: |
+          echo "$YT_CLIENT_SECRETS_B64" | base64 -d > client_secrets.json
+          echo "$YT_TOKEN_JSON_B64" | base64 -d > token.json
+
+      - name: Make reel
+        env:
+          ARTICLE_URL: ${{ github.event.inputs.article_url }}
+          GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+          GEMINI_MODEL_NAME: gemini-3.6-flash
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python reels_maker.py
+
+      - name: Save reel (download ke liye)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reel
+          path: reel_outputs/*.mp4
+          if-no-files-found: ignore
