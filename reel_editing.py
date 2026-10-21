@@ -63,7 +63,8 @@ MIN_SCENE_SEC = 1.2
 
 # Background website recording (saaf, bina blur)
 BG_REC_W, BG_REC_H = 540, 960           # mobile layout
-BG_REC_PIXEL_W = 810                    # recording ki asli chaudai: 810x1440 -> 1080x1920 (bahut badhane par runner dheema hota hai)
+# NOTE: recording ka size hamesha viewport ke barabar rakhna hai (Playwright video ko bada nahi karta;
+# bada size dene par page kone me chhota dikhta hai aur baaki jagah gray rehti hai)
 BG_SCROLL_PX_PER_SEC = 120
 
 SCROLL_JS = """
@@ -699,17 +700,14 @@ def record_site_background(url, duration, work_dir):
                 print(f"⚠️ Page width measure fail ({e}); default {BG_REC_W}px")
         rec_w -= rec_w % 2
         rec_h = int(round(rec_w * 16 / 9))
-        dsf = BG_REC_PIXEL_W / float(rec_w)
-        vid_w = BG_REC_PIXEL_W
-        vid_h = int(round(BG_REC_PIXEL_W * 16 / 9 / 2.0)) * 2
-        print(f"📐 Recording viewport {rec_w}x{rec_h} (scale {dsf:.2f}) -> video {vid_w}x{vid_h}")
+        rec_h -= rec_h % 2
+        print(f"📐 Recording viewport = video size = {rec_w}x{rec_h} (9:16)")
 
         # 2) us chaudai ke 9:16 viewport me record karo
         ctx = browser.new_context(
             viewport={"width": rec_w, "height": rec_h},
-            device_scale_factor=dsf,
             record_video_dir=work_dir,
-            record_video_size={"width": vid_w, "height": vid_h})
+            record_video_size={"width": rec_w, "height": rec_h})
         t_open = time.time()
         page = _open_page(ctx, url)
         try:
@@ -730,7 +728,7 @@ def record_site_background(url, duration, work_dir):
 def prepare_background_video(raw_path, out_path, start_sec, duration):
     """Recording ko 1080x1920 30fps me badlo (blur nahi: website saaf dikhegi)."""
     vf = (f"fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,"
-          f"crop={W}:{H},format=yuv420p")
+          f"crop={W}:{H},unsharp=5:5:0.9:3:3:0.4,format=yuv420p")
     cmd = [_ffmpeg(), "-y", "-ss", f"{max(start_sec - 0.1, 0):.2f}", "-i", raw_path,
            "-t", f"{duration:.2f}", "-vf", vf, "-an",
            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", out_path]
