@@ -7,21 +7,22 @@ reels_maker.py is module ko import karta hai. Isme 4 cheezein hain:
 1. CAPTIONS      : bole ja rahe shabd ko highlight karne wale bade Hindi captions (PIL se,
                    ImageMagick ki zaroorat nahi).
 2. SCENE SYNC    : har image tab dikhti hai jab script me uska zikr ho (word timings se).
-3. BLUR BG       : https://bgnewswab.github.io/sgnewswab/index.html ki live screen
-                   recording (Playwright) peeche blur hokar chalti hai. Recording fail ho
-                   to image ki blurred copy fallback me lagti hai.
+3. WEBSITE BG    : jo article link diya jaata hai uski live screen recording (Playwright)
+                   peeche saaf (bina blur) scroll hoti hai. Recording fail ho to image ki
+                   blurred copy fallback me lagti hai.
 4. TRANSITIONS   : fade / slide / flash / zoom — har scene ke beech.
 
 Layout (1080x1920):
-    peeche  -> blurred website recording
-    beech   -> image "card" (poori image dikhti hai, crop nahi hoti, halka zoom)
-    neeche  -> captions
+    peeche  -> website recording (saaf, blur nahi)
+    upar    -> image "card" (poori image dikhti hai, crop nahi hoti, halka zoom)
+    beech   -> captions (Hinglish, bolte hue shabd highlight)
 """
 import os
 import re
 import time
 import shutil
 import subprocess
+import unicodedata
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
@@ -37,32 +38,33 @@ W, H = 1080, 1920
 FPS = 30
 
 # Image card
-CARD_BOX_W, CARD_BOX_H = 960, 1100     # image is box ke andar poori fit hoti hai
-CARD_CENTER_Y = 760
+CARD_BOX_W, CARD_BOX_H = 940, 860      # image is box ke andar poori fit hoti hai
+CARD_CENTER_Y = 600
 CARD_RADIUS = 38
 CARD_BORDER = 8
 CARD_ZOOM = 0.07                       # 7% slow zoom
 
 # Captions
-CAPTION_CENTER_Y = 1560
-CAPTION_FONT_SIZE = 86
+CAPTION_CENTER_Y = 1300
+CAPTION_FONT_SIZE = 80
 CAPTION_WORDS_PER_LINE = 3
-CAPTION_MARGIN = 80
+CAPTION_MARGIN = 60
 CAPTION_STROKE = 7
 CAPTION_ACTIVE_BG = (255, 214, 0, 255)   # bola ja raha shabd: peela box
 CAPTION_ACTIVE_FG = (0, 0, 0, 255)       # ... us par kala text
 CAPTION_TEXT = (255, 255, 255, 255)
+# Caption ki lipi: "hinglish" (Roman, default) ya "hindi" (Devanagari)
+CAPTION_SCRIPT = os.getenv("REEL_CAPTION_SCRIPT", "hinglish").strip().lower()
 
 # Transitions (cycle me chalte hain)
 TRANSITIONS = ["fade", "slide", "flash", "zoom"]
 TRANSITION_SEC = 0.45
 MIN_SCENE_SEC = 1.2
 
-# Background website recording
-BG_REC_W, BG_REC_H = 540, 960           # mobile layout me record hota hai, phir 2x upscale + blur
-BG_SCROLL_PX_PER_SEC = 140
-BG_BLUR_SIGMA = 10
-BG_BRIGHTNESS = -0.10
+# Background website recording (saaf, bina blur)
+BG_REC_W, BG_REC_H = 540, 960           # mobile layout
+BG_DSF = 1.5                            # sharpness: recording 810x1440 -> 1080x1920 (2 karne par runner dheema ho sakta hai)
+BG_SCROLL_PX_PER_SEC = 120
 
 SCROLL_JS = """
 ([durMs, speed]) => new Promise(resolve => {
@@ -105,23 +107,30 @@ def _word_weight(word):
 
 def measure_audio_part(path):
     """(duration, shuru ki khamoshi, ant ki khamoshi) seconds me, speed lagne se pehle."""
-    from moviepy.editor import AudioFileClip
-    clip = AudioFileClip(path)
-    dur = float(clip.duration)
-    lead = trail = 0.0
+    sr = 8000
     try:
-        arr = clip.to_soundarray(fps=8000)
-        env = np.abs(arr).max(axis=1) if arr.ndim == 2 else np.abs(arr)
-        if env.size and env.max() > 0:
-            idx = np.where(env > env.max() * 0.04)[0]
+        proc = subprocess.run(
+            [_ffmpeg(), "-v", "error", "-i", path, "-f", "s16le", "-ac", "1", "-ar", str(sr), "-"],
+            capture_output=True, check=True)
+        arr = np.frombuffer(proc.stdout, dtype=np.int16).astype("float32")
+        if arr.size == 0:
+            raise ValueError("empty audio")
+        dur = arr.size / float(sr)
+        env = np.convolve(np.abs(arr), np.ones(80, dtype="float32") / 80.0, mode="same")
+        lead = trail = 0.0
+        if env.max() > 0:
+            idx = np.where(env > env.max() * 0.05)[0]
             if idx.size:
-                lead = idx[0] / 8000.0
-                trail = max(dur - (idx[-1] + 1) / 8000.0, 0.0)
+                lead = idx[0] / float(sr)
+                trail = max(dur - (idx[-1] + 1) / float(sr), 0.0)
+        return dur, min(lead, 1.0), min(trail, 1.0)
     except Exception as e:
         print(f"⚠️ Silence measure skip ({e})")
-    finally:
+        from moviepy.editor import AudioFileClip
+        clip = AudioFileClip(path)
+        dur = float(clip.duration)
         clip.close()
-    return dur, min(lead, 1.0), min(trail, 1.0)
+        return dur, 0.0, 0.0
 
 
 def measure_chunks(chunk_texts, part_paths):
@@ -212,6 +221,160 @@ def assign_images(plan, kw_to_path, all_paths):
 
 
 # ==========================================
+# 1b. HINGLISH (Devanagari -> Roman)
+# ==========================================
+# Gemini har scene ka "hinglish" text deta hai. Wo na mile ya galat nikle to
+# neeche ka simple rule-based transliterator fallback ki tarah chalta hai.
+_HI_DICT_RAW = {
+    "है": "hai", "हैं": "hain", "में": "mein", "की": "ki", "का": "ka", "के": "ke", "को": "ko",
+    "से": "se", "पर": "par", "और": "aur", "यह": "yeh", "ये": "ye", "वो": "woh", "वह": "woh",
+    "क्या": "kya", "कि": "ki", "तो": "toh", "भी": "bhi", "ही": "hi", "नहीं": "nahi", "हो": "ho",
+    "था": "tha", "थी": "thi", "थे": "the", "रहा": "raha", "रही": "rahi", "रहे": "rahe",
+    "आज": "aaj", "कल": "kal", "अब": "ab", "जब": "jab", "तब": "tab", "हम": "hum", "आप": "aap",
+    "मैं": "main", "एक": "ek", "दो": "do", "तीन": "teen", "इस": "is", "उस": "us",
+    "लिए": "liye", "साथ": "saath", "बाद": "baad", "पहले": "pehle", "ज़रूर": "zaroor",
+    "फिर": "phir", "कर": "kar", "करो": "karo", "करें": "karein", "दोस्तों": "doston",
+    "फॉलो": "follow", "कमेंट": "comment", "शेयर": "share", "लाइक": "like", "टीम": "team",
+    "इंडिया": "India", "भारत": "Bharat", "भारतीय": "Bharatiya", "ज़िम्बाब्वे": "Zimbabwe",
+    "सब": "sab", "बहुत": "bahut", "सिर्फ": "sirf", "कुछ": "kuch", "कोई": "koi", "जो": "jo",
+    "अपनी": "apni", "अपना": "apna", "आपकी": "aapki", "आपका": "aapka", "आपके": "aapke",
+    "ज़्यादा": "zyada", "खबर": "khabar", "ख़बर": "khabar", "न्यूज़": "news", "मैच": "match",
+    "सीरीज़": "series", "क्लीन": "clean", "स्वीप": "sweep", "राय": "raay",
+}
+_HI_DICT = {unicodedata.normalize("NFC", k): v for k, v in _HI_DICT_RAW.items()}
+
+_IND_VOW = {"अ": "a", "आ": "aa", "इ": "i", "ई": "ee", "उ": "u", "ऊ": "oo", "ऋ": "ri",
+            "ए": "e", "ऐ": "ai", "ओ": "o", "औ": "au", "ऑ": "o", "ऍ": "e"}
+_MATRA = {"ा": "aa", "ि": "i", "ी": "ee", "ु": "u", "ू": "oo", "ृ": "ri", "े": "e", "ै": "ai",
+          "ो": "o", "ौ": "au", "ॉ": "o", "ॅ": "e"}
+_CONS = {"क": "k", "ख": "kh", "ग": "g", "घ": "gh", "ङ": "n", "च": "ch", "छ": "chh", "ज": "j",
+         "झ": "jh", "ञ": "n", "ट": "t", "ठ": "th", "ड": "d", "ढ": "dh", "ण": "n", "त": "t",
+         "थ": "th", "द": "d", "ध": "dh", "न": "n", "प": "p", "फ": "ph", "ब": "b", "भ": "bh",
+         "म": "m", "य": "y", "र": "r", "ल": "l", "व": "v", "श": "sh", "ष": "sh", "स": "s",
+         "ह": "h", "ळ": "l"}
+_NUKTA_MAP = {"क": "q", "ख": "kh", "ग": "g", "ज": "z", "ड": "r", "ढ": "rh", "फ": "f", "य": "y"}
+_DIGITS = {c: str(i) for i, c in enumerate("०१२३४५६७८९")}
+_VIRAMA, _NUKTA = "\u094d", "\u093c"
+_DEV_RE = re.compile(r"[\u0900-\u097F]")
+
+
+def _translit_word(word):
+    m = re.match(r"^([^\w\u0900-\u0963\u0966-\u097F]*)(.*?)([^\w\u0900-\u0963\u0966-\u097F]*)$", word, re.S)
+    pre, core, post = m.groups() if m else ("", word, "")
+    pre, post = pre.replace("।", "."), post.replace("।", ".")
+    if not _DEV_RE.search(core):
+        return word
+    core = unicodedata.normalize("NFD", core)
+    nfc = unicodedata.normalize("NFC", core)
+    if nfc in _HI_DICT:
+        return pre + _HI_DICT[nfc] + post
+    core = core.replace("ज" + _VIRAMA + "ञ", "ग" + _VIRAMA + "य")      # ज्ञ -> gya
+
+    syl, i, ch = [], 0, list(core)          # syl: [consonant, vowel(None = inherent a), nasal]
+    while i < len(ch):
+        c = ch[i]
+        if c in _IND_VOW:
+            syl.append(["", _IND_VOW[c], ""])
+            i += 1
+        elif c in _CONS:
+            cons = _CONS[c]
+            i += 1
+            if i < len(ch) and ch[i] == _NUKTA:
+                cons = _NUKTA_MAP.get(c, cons)
+                i += 1
+            vowel = None
+            if i < len(ch) and ch[i] == _VIRAMA:
+                vowel = ""
+                i += 1
+            elif i < len(ch) and ch[i] in _MATRA:
+                vowel = _MATRA[ch[i]]
+                i += 1
+            syl.append([cons, vowel, ""])
+        elif c in ("\u0902", "\u0901"):      # anusvara / chandrabindu
+            if syl:
+                syl[-1][2] = "n"
+            i += 1
+        elif c == "\u0903":                  # visarga
+            if syl:
+                syl[-1][2] = "h"
+            i += 1
+        elif c == _NUKTA:
+            i += 1
+        elif c in _DIGITS:
+            syl.append([_DIGITS[c], "", ""])
+            i += 1
+        elif c == "।":
+            syl.append([".", "", ""])
+            i += 1
+        else:
+            syl.append([c, "", ""])
+            i += 1
+
+    n, out, prev_vowel = len(syl), [], False
+    for idx, (cons, vowel, nasal) in enumerate(syl):
+        if vowel is None:
+            nxt = syl[idx + 1] if idx + 1 < n else None
+            if idx == n - 1:
+                v = ""                                   # shabd ke ant ka 'a' nahi bolte
+            elif idx > 0 and prev_vowel and nxt is not None and nxt[1] not in (None, ""):
+                v = ""                                   # sarkaar: beech ka 'a' gira do
+            else:
+                v = "a"
+        else:
+            v = vowel
+        if idx == n - 1:
+            if v == "aa" and not nasal:
+                v = "a"
+            elif v == "ee" and not nasal:
+                v = "i"
+            elif v == "e" and nasal:
+                v = "ei"
+        if nasal == "n" and idx + 1 < n and syl[idx + 1][0][:1] in ("b", "p", "m"):
+            nasal = "m"
+        out.append(cons + v + nasal)
+        prev_vowel = (v != "")
+    return pre + "".join(out) + post
+
+
+def devanagari_to_hinglish(text):
+    return " ".join(_translit_word(w) for w in text.split())
+
+
+def scene_word_ranges(scenes, n_words):
+    """Har scene ke shabdon ka [start, end) index (plan_scenes jaisa hi hisaab)."""
+    counts = [max(len(s["text"].split()), 1) for s in scenes]
+    tot = float(sum(counts)) or 1.0
+    starts, cum = [], 0
+    for c in counts:
+        starts.append(min(int(round(cum / tot * n_words)), max(n_words - 1, 0)))
+        cum += c
+    return [(a, starts[i + 1] if i + 1 < len(starts) else n_words) for i, a in enumerate(starts)]
+
+
+def hinglish_words(words, scenes):
+    """Devanagari timed words ko Hinglish tokens me badlo (timing wahi rehti hai)."""
+    out = []
+    for sc, (a, b) in zip(scenes, scene_word_ranges(scenes, len(words))):
+        dev = words[a:b]
+        if not dev:
+            continue
+        tokens = (sc.get("hinglish") or "").split() or devanagari_to_hinglish(sc["text"]).split()
+        if not tokens:
+            tokens = [w["word"] for w in dev]
+        if len(tokens) == len(dev):          # shabd-dar-shabd match: asli timing
+            out += [{"word": t, "start": w["start"], "end": w["end"]} for t, w in zip(tokens, dev)]
+        else:                                # ginti alag: scene ke andar lambai ke hisaab se baanto
+            t0, t1 = dev[0]["start"], dev[-1]["end"]
+            wts = [_word_weight(t) for t in tokens]
+            tot, t = float(sum(wts)), t0
+            for tok, wt in zip(tokens, wts):
+                span = (t1 - t0) * wt / tot
+                out.append({"word": tok, "start": t, "end": t + span})
+                t += span
+    return out
+
+
+# ==========================================
 # 2. CARD (image poori dikhe, crop na ho)
 # ==========================================
 def make_card(img_path):
@@ -254,27 +417,34 @@ def blurred_image_bg(img_path):
 # ==========================================
 # 3. CAPTIONS
 # ==========================================
-def _find_devanagari_font():
-    cands = [
-        os.getenv("CAPTION_FONT", ""),
-        "fonts/NotoSansDevanagari-Bold.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansDevanagariUI-Bold.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Bold.ttf",
-        "/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",
-        "C:/Windows/Fonts/NirmalaB.ttf",
-        "C:/Windows/Fonts/Nirmala.ttf",
-        "C:/Windows/Fonts/mangalb.ttf",
-        "/System/Library/Fonts/Kohinoor.ttc",
-    ]
+def _find_font(script):
+    env = os.getenv("CAPTION_FONT", "")
+    if script == "hindi":
+        cands = [env,
+                 "fonts/NotoSansDevanagari-Bold.ttf",
+                 "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+                 "/usr/share/fonts/truetype/noto/NotoSansDevanagariUI-Bold.ttf",
+                 "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Bold.ttf",
+                 "/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",
+                 "C:/Windows/Fonts/NirmalaB.ttf", "C:/Windows/Fonts/Nirmala.ttf",
+                 "C:/Windows/Fonts/mangalb.ttf", "/System/Library/Fonts/Kohinoor.ttc"]
+        fc_name = "Noto Sans Devanagari:bold"
+    else:
+        cands = [env,
+                 "fonts/NotoSans-Bold.ttf",
+                 "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+                 "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                 "C:/Windows/Fonts/arialbd.ttf", "C:/Windows/Fonts/segoeuib.ttf",
+                 "/System/Library/Fonts/Supplemental/Arial Bold.ttf"]
+        fc_name = "sans-serif:bold"
     for p in cands:
         if p and os.path.exists(p):
             return p
     try:   # Linux: fontconfig se pucho
-        out = subprocess.run(
-            ["fc-match", "-f", "%{file}", "Noto Sans Devanagari:bold"],
-            capture_output=True, text=True, timeout=10).stdout.strip()
-        if out and os.path.exists(out) and "evanagari" in out:
+        out = subprocess.run(["fc-match", "-f", "%{file}", fc_name],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+        if out and os.path.exists(out) and (script != "hindi" or "evanagari" in out):
             return out
     except Exception:
         pass
@@ -284,22 +454,25 @@ def _find_devanagari_font():
 _FONT_CACHE = {}
 
 
-def _load_font(size):
-    if size in _FONT_CACHE:
-        return _FONT_CACHE[size]
-    path = _find_devanagari_font()
+def _load_font(size, script="latin"):
+    key = (size, script)
+    if key in _FONT_CACHE:
+        return _FONT_CACHE[key]
+    path = _find_font(script)
     if not path:
         raise RuntimeError(
-            "Hindi font nahi mila. GitHub Actions me 'fonts-noto-core' install karo, ya "
-            "Noto Sans Devanagari Bold ko fonts/NotoSansDevanagari-Bold.ttf me rakho, "
-            "ya CAPTION_FONT env var me font ka path do.")
-    if features.check("raqm"):
-        font = ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
+            "Caption font nahi mila. GitHub Actions me 'fonts-noto-core' install karo, ya font "
+            "fonts/ folder me rakho, ya CAPTION_FONT env var me font ka path do.")
+    if script == "hindi":
+        if features.check("raqm"):
+            font = ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
+        else:
+            print("⚠️ Pillow me RAQM nahi hai: Hindi matras/conjuncts galat dikh sakte hain "
+                  "(Linux par 'libraqm0' install karo).")
+            font = ImageFont.truetype(path, size)
     else:
-        print("⚠️ Pillow me RAQM nahi hai: Hindi matras/conjuncts galat dikh sakte hain "
-              "(Linux par 'libraqm0' install karo).")
         font = ImageFont.truetype(path, size)
-    _FONT_CACHE[size] = font
+    _FONT_CACHE[key] = font
     return font
 
 
@@ -352,7 +525,7 @@ def render_caption(tokens, active, font):
 
 def build_caption_clips(words, total_dur):
     from moviepy.editor import ImageClip
-    font = _load_font(CAPTION_FONT_SIZE)
+    font = _load_font(CAPTION_FONT_SIZE, "hindi" if CAPTION_SCRIPT == "hindi" else "latin")
     chunks = build_caption_chunks(words, font, W - 2 * CAPTION_MARGIN)
     clips = []
     for chunk in chunks:
@@ -454,14 +627,19 @@ def record_site_background(url, duration, work_dir):
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(
             viewport={"width": BG_REC_W, "height": BG_REC_H},
+            device_scale_factor=BG_DSF,
             record_video_dir=work_dir,
-            record_video_size={"width": BG_REC_W, "height": BG_REC_H})
+            record_video_size={"width": int(BG_REC_W * BG_DSF), "height": int(BG_REC_H * BG_DSF)})
         t_open = time.time()
         page = ctx.new_page()
         try:
             page.goto(url, wait_until="networkidle", timeout=40000)
         except Exception:
             page.goto(url, wait_until="domcontentloaded", timeout=40000)
+        try:   # scrollbar recording me na dikhe
+            page.add_style_tag(content="::-webkit-scrollbar{display:none!important} html{scrollbar-width:none!important}")
+        except Exception:
+            pass
         page.wait_for_timeout(2500)
         skip = time.time() - t_open
         page.evaluate(SCROLL_JS, [int(total * 1000), BG_SCROLL_PX_PER_SEC])
@@ -473,16 +651,16 @@ def record_site_background(url, duration, work_dir):
     return raw_path, skip
 
 
-def blur_background_video(raw_path, out_path, start_sec, duration):
-    vf = (f"fps={FPS},gblur=sigma={BG_BLUR_SIGMA},"
-          f"scale={W}:{H}:force_original_aspect_ratio=increase:flags=bicubic,crop={W}:{H},"
-          f"eq=brightness={BG_BRIGHTNESS}:saturation=1.15,format=yuv420p")
+def prepare_background_video(raw_path, out_path, start_sec, duration):
+    """Recording ko 1080x1920 30fps me badlo (blur nahi: website saaf dikhegi)."""
+    vf = (f"fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,"
+          f"crop={W}:{H},format=yuv420p")
     cmd = [_ffmpeg(), "-y", "-ss", f"{max(start_sec - 0.1, 0):.2f}", "-i", raw_path,
            "-t", f"{duration:.2f}", "-vf", vf, "-an",
-           "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", out_path]
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", out_path]
     subprocess.run(cmd, capture_output=True, check=True)
     if not os.path.exists(out_path) or os.path.getsize(out_path) < 5000:
-        raise Exception("Blur background nahi bana.")
+        raise Exception("Background video nahi bani.")
 
 
 # ==========================================
@@ -534,11 +712,11 @@ def build_reel(audio_path, chunk_infos, scenes, images, kw_to_path, output_mp4,
     if bg_url:
         try:
             raw, skip = record_site_background(bg_url, total, work_dir)
-            blurred = os.path.join(work_dir, "bg_blur.mp4")
-            blur_background_video(raw, blurred, skip, total)
-            bg = VideoFileClip(blurred).without_audio()
+            prepared = os.path.join(work_dir, "bg_site.mp4")
+            prepare_background_video(raw, prepared, skip, total)
+            bg = VideoFileClip(prepared).without_audio()
             bg_layers = [bg.fx(vfx.loop, duration=total).set_start(0)]
-            print("✅ Website recording background ready")
+            print("✅ Website recording background ready (saaf, bina blur)")
         except Exception as e:
             print(f"⚠️ Website background fail ({e}) -> blurred image fallback")
     if not bg_layers:
@@ -550,7 +728,8 @@ def build_reel(audio_path, chunk_infos, scenes, images, kw_to_path, output_mp4,
 
     # captions (fail ho to bina caption ke bhi reel ban jaye)
     try:
-        caption_clips = build_caption_clips(words, total)
+        cap_words = hinglish_words(words, scenes) if CAPTION_SCRIPT != "hindi" else words
+        caption_clips = build_caption_clips(cap_words, total)
     except Exception as e:
         print(f"⚠️ Captions skip: {e}")
         caption_clips = []
