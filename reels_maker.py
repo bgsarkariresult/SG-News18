@@ -26,6 +26,23 @@ except ImportError:
     print("❌ ddgs library nahi mili. Pehle yeh chalao: pip install ddgs")
     exit()
 
+import long_video_editing
+
+# ... script, images, audio generate karne ke baad ...
+
+output_mp4 = os.path.join(OUTPUT_DIR, f"News_Long_{time.strftime('%Y%m%d_%H%M%S')}.mp4")
+
+final_video = long_video_editing.build_long_video(
+    audio_file,
+    chunk_infos,
+    scenes,
+    images,
+    kw_to_path,
+    output_mp4,
+    bg_url=(BG_SITE_URL or url),
+    speed=1.05,          # long video ke liye thoda slower theek rehta hai
+)
+
 # ==========================================
 # 0. FFMPEG PATH
 # ==========================================
