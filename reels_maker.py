@@ -170,7 +170,7 @@ def generate_teen_friendly_script(article_text):
        - बीच में: मुख्य facts तेज़ गति से, साफ और interesting
        - आखिरी 4-5 सेकंड: Soft CTA (जैसे "Full story के लिए कमेंट करो", "शेयर कर दो दोस्तों के साथ", "Follow for more updates")
     4. कुल लंबाई: Voiceover लगभग 28-32 सेकंड (लगभग 70-85 शब्द)।
-    5. Scenes: voiceover को क्रम से 5 से 6 scenes में बाँटो। हर scene में (a) उस हिस्से का Hindi voiceover text और (b) उस वक़्त स्क्रीन पर दिखाने लायक image का 1 short English search keyword (सिर्फ real people, places, events) हो। सभी scenes के text को क्रम से जोड़ने पर पूरा voiceover बनना चाहिए: कुछ भी छूटे या दोहराया न जाए। Hook पहले scene में और CTA आख़िरी scene में हो। हर scene में (c) "hinglish" भी दो: वही वाक्य Roman अक्षरों में, जैसे लोग WhatsApp पर लिखते हैं (kya, hai, mein, nahi, aaj), शब्द-दर-शब्द उतने ही शब्द और उसी क्रम में, कोई शब्द जोड़ना या हटाना नहीं। नाम और English शब्द सामान्य spelling में लिखो (Smriti Mandhana, Team India, T20)।
+    5. Scenes: voiceover को क्रम से 5 से 6 scenes में बाँटो। हर scene में (a) उस हिस्से का Hindi voiceover text और (b) उस वक़्त स्क्रीन पर दिखाने लायक image का 1 short English search keyword (सिर्फ real people, places, events) हो। सभी scenes के text को क्रम से जोड़ने पर पूरा voiceover बनना चाहिए: कुछ भी छूटे या दोहराया न जाए। Hook पहले scene में और CTA आख़िरी scene में हो। हर scene में (c) "hinglish" भी दो: वही वाक्य Roman अक्षरों में, जैसे लोग WhatsApp पर लिखते हैं (kya, hai, mein, nahi, aaj), शब्द-दर-शब्द उतने ही शब्द और उसी क्रम में, कोई शब्द जोड़ना या हटाना नहीं। साथ में \"keyword_alt\" दो: उसी scene का और सरल/चौड़ा backup search keyword (सिर्फ़ व्यक्ति, टीम या विषय का नाम, जैसे \"Gautam Gambhir\" या \"BCCI\"), ताकि पहला keyword फेल होने पर दूसरी इमेज मिल सके। नाम और English शब्द सामान्य spelling में लिखो (Smriti Mandhana, Team India, T20)।
     6. Video Title: Catchy & Clickworthy Title with Emojis (Max 80-90 chars).
     7. Video Description: Summary of the news + Call To Action + Relevant Trending Hashtags (#Shorts #Viral #News).
 
@@ -182,9 +182,9 @@ def generate_teen_friendly_script(article_text):
         "title": "Viral Catchy Title with Emojis 😱🔥",
         "description": "Short engaging description of the news...\\n\\nFollow for more updates! 🚀\\n\\n#Shorts #News #Trending #Viral",
         "scenes": [
-            {{"text": "Hook वाला हिस्सा (Hindi voiceover)", "hinglish": "same words in Roman Hinglish", "keyword": "english keyword 1"}},
-            {{"text": "अगला हिस्सा (Hindi voiceover)", "hinglish": "same words in Roman Hinglish", "keyword": "english keyword 2"}},
-            {{"text": "CTA वाला आख़िरी हिस्सा (Hindi voiceover)", "hinglish": "same words in Roman Hinglish", "keyword": "english keyword 5"}}
+            {{"text": "Hook वाला हिस्सा (Hindi voiceover)", "hinglish": "same words in Roman Hinglish", "keyword": "english keyword 1", "keyword_alt": "simple backup keyword"}},
+            {{"text": "अगला हिस्सा (Hindi voiceover)", "hinglish": "same words in Roman Hinglish", "keyword": "english keyword 2", "keyword_alt": "simple backup keyword"}},
+            {{"text": "CTA वाला आख़िरी हिस्सा (Hindi voiceover)", "hinglish": "same words in Roman Hinglish", "keyword": "english keyword 5", "keyword_alt": "simple backup keyword"}}
         ]
     }}
     """
@@ -259,7 +259,8 @@ def generate_teen_friendly_script(article_text):
                 if isinstance(sc, dict) and str(sc.get("text", "")).strip() and str(sc.get("keyword", "")).strip():
                     scenes.append({"text": " ".join(str(sc["text"]).split()),
                                    "hinglish": " ".join(str(sc.get("hinglish", "")).split()),
-                                   "keyword": str(sc["keyword"]).strip()})
+                                   "keyword": str(sc["keyword"]).strip(),
+                                   "keyword_alt": " ".join(str(sc.get("keyword_alt", "")).split())})
             if scenes:
                 script_text = " ".join(sc["text"] for sc in scenes)
                 keywords = [sc["keyword"] for sc in scenes]
@@ -289,7 +290,7 @@ def _is_dup(h, hashes):
 def pick_relevant_image(cand_paths, keyword, scene_text, context=""):
     """
     Gemini (vision) se poochho ki kaunsi image is scene se sabse zyada match karti hai.
-    Index lautata hai; -1 = koi bhi sahi nahi; None = check nahi ho paya (Gemini fail).
+    (index, match 0-10) lautata hai; index -1 = koi bhi sahi nahi; None = check nahi ho paya (Gemini fail).
     """
     if not GEMINI_CLIENTS or not cand_paths:
         return None
@@ -321,8 +322,9 @@ def pick_relevant_image(cand_paths, keyword, scene_text, context=""):
         "Below are candidate images labelled Image 0, Image 1, ... Pick the ONE image that best shows "
         "the exact person / place / team / event this scene is about. Reject images of a different person, "
         "a different sport or topic, images with big text overlays, logos or watermarks, collages, memes, "
-        "screenshots or cartoons. "
-        'Reply ONLY with JSON: {"best": <index, or -1 if none of them matches>, "reason": "short"}'
+        "screenshots or cartoons. Always name the closest candidate, and rate how well it matches. "
+        'Reply ONLY with JSON: {"best": <index of the closest candidate>, "match": <0-10, 10 = exactly right, '
+        '0 = completely unrelated>, "reason": "short"}'
     )
     models = list(dict.fromkeys([os.getenv("GEMINI_MODEL_NAME", "gemini-3.6-flash"), "gemini-3.7-flash"]))
     for key_label, gclient in GEMINI_CLIENTS:
@@ -334,19 +336,27 @@ def pick_relevant_image(cand_paths, keyword, scene_text, context=""):
                     continue
                 data = json.loads(m.group(0))
                 best = int(data.get("best", -1))
-                if best < -1 or best >= len(cand_paths):
-                    best = -1
-                print(f"🧠 Gemini image check [{keyword}] -> {best} ({str(data.get('reason', ''))[:80]})")
-                return best
+                match = float(data.get("match", 0))
+                if best < 0 or best >= len(cand_paths):
+                    best, match = -1, 0.0
+                print(f"🧠 Gemini image check [{keyword}] -> {best} match={match:g} ({str(data.get('reason', ''))[:80]})")
+                return best, match
             except Exception as e:
                 print(f"⚠️ Image check {key_label} {model_name} failed: {str(e)[:80]}")
     return None
 
 
+MIN_IMAGE_MATCH = 3      # isse kam match wali image nahi lagti
+GOOD_IMAGE_MATCH = 6     # itni match mile to aage search nahi karte
+
+
 def download_logo_free_images(keywords, output_folder="temp_images", article_image_url=None,
-                              scene_texts=None, context=""):
+                              scene_texts=None, context="", alt_keywords=None):
     print("📸 Downloading relevant images strictly according to script keywords...")
     scene_texts = scene_texts or {}
+    alt_keywords = alt_keywords or {}
+    context_query = re.sub(r"[^A-Za-z0-9 ]+", " ", context or "")
+    context_query = " ".join(context_query.split())
 
     if os.path.exists(output_folder):
         for f in os.listdir(output_folder):
@@ -388,7 +398,12 @@ def download_logo_free_images(keywords, output_folder="temp_images", article_ima
             return None
 
     def collect(ddgs, query, cands, cand_hashes, limit, max_results):
-        results = list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
+        try:
+            results = list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
+        except Exception as e:          # rate limit: thoda ruk kar ek baar aur
+            print(f"⚠️ Image search retry for '{query}': {str(e)[:60]}")
+            time.sleep(4)
+            results = list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
         for r in results:
             if len(cands) >= limit:
                 break
@@ -429,26 +444,43 @@ def download_logo_free_images(keywords, output_folder="temp_images", article_ima
                     if article_path and article_path not in downloaded:
                         cands.append(article_path)
                         cand_hashes.append(_ahash(article_path))
-                    collect(ddgs, kw, cands, cand_hashes, limit=5, max_results=12)
-                    if len(cands) < 3:
-                        print(f"🔍 Retry searching image for: '{kw} photo'")
-                        collect(ddgs, f"{kw} photo", cands, cand_hashes, limit=5, max_results=8)
 
-                    best = None
-                    if cands:
-                        choice = pick_relevant_image(cands, kw, scene_texts.get(kw, ""), context)
-                        if choice is None:          # Gemini check nahi ho paya: pehli valid image
-                            best = cands[0]
-                        elif choice >= 0:
-                            best = cands[choice]
-                        else:
-                            print(f"⚠️ '{kw}' ke liye koi image script se match nahi hui")
+                    alt = alt_keywords.get(kw, "").strip()
+                    if not alt and len(kw.split()) > 2:
+                        alt = " ".join(kw.split()[:2])
+                    queries = [kw]
+                    if alt and alt.lower() != kw.lower():
+                        queries.append(alt)
+                    if len(context_query) >= 6 and context_query.lower() not in [q.lower() for q in queries]:
+                        queries.append(context_query)
+
+                    best, best_score, start = None, -1.0, 0
+                    for qi, q in enumerate(queries):
+                        if qi > 0:
+                            print(f"🔍 Backup search for '{kw}': '{q}'")
+                        collect(ddgs, q, cands, cand_hashes, limit=len(cands) + 5, max_results=12)
+                        new = cands[start:]
+                        start = len(cands)
+                        if not new:
+                            continue
+                        res = pick_relevant_image(new, kw, scene_texts.get(kw, ""), context)
+                        if res is None:                 # Gemini check nahi ho paya: pehli valid image
+                            best, best_score = new[0], GOOD_IMAGE_MATCH
+                            break
+                        idx, score = res
+                        if idx >= 0 and score > best_score:
+                            best, best_score = new[idx], score
+                        if best_score >= GOOD_IMAGE_MATCH:
+                            break
+                    if best is not None and best_score < MIN_IMAGE_MATCH:
+                        print(f"⚠️ '{kw}' ke liye koi image script se match nahi hui (best match {best_score:g})")
+                        best = None
 
                     if best:
                         downloaded.append(best)
                         used_by_keyword[kw] = best
                         chosen_hashes.append(_ahash(best))
-                        print(f"✅ Selected for '{kw}': {os.path.basename(best)}")
+                        print(f"✅ Selected for '{kw}': {os.path.basename(best)} (match {best_score:g})")
 
                     for c in cands:        # chune hue ke alawa candidates hata do
                         if c not in downloaded and c != article_path and os.path.exists(c):
@@ -709,8 +741,14 @@ def main():
     scene_texts = {}
     for sc in scenes:
         scene_texts.setdefault(sc["keyword"], sc["text"])
+    alt_kws = {}
+    for sc in scenes:
+        alt_kws.setdefault(sc["keyword"], sc.get("keyword_alt", ""))
     images, kw_to_path = download_logo_free_images(
-        unique_kws, article_image_url=article_img, scene_texts=scene_texts, context=yt_title)
+        unique_kws, article_image_url=article_img, scene_texts=scene_texts,
+        context=yt_title, alt_keywords=alt_kws)
+    got = len(set(kw_to_path.values()))
+    print(f"🖼️ Scenes ke liye alag images mili: {got}/{len(unique_kws)}")
     if not images:
         raise Exception("Koi image nahi mili.")
 
@@ -732,7 +770,7 @@ def main():
 
     video_id = upload_to_youtube(final_video, yt_title, yt_desc)
     if video_id:
-        notify_telegram(f"✅ <b>Reel upload ho gaya (Unlisted)</b>\n🎬 {yt_title}\n🔗 https://youtube.com/shorts/{video_id}")
+        notify_telegram(f"✅ <b>Reel upload ho gaya (Unlisted)</b>\n🎬 {yt_title}\n🖼️ Images: {got}/{len(unique_kws)} scenes\n🔗 https://youtube.com/shorts/{video_id}")
     else:
         notify_telegram(f"✅ Reel ban gaya (YouTube upload nahi hua): {os.path.basename(final_video)}\n⚠️ Wajah: {LAST_UPLOAD_ERROR[:300] or 'pata nahi'}")
 
