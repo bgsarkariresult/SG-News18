@@ -63,7 +63,7 @@ MIN_SCENE_SEC = 1.2
 
 # Background website recording (saaf, bina blur)
 BG_REC_W, BG_REC_H = 540, 960           # mobile layout
-BG_DSF = 1.5                            # sharpness: recording 810x1440 -> 1080x1920 (2 karne par runner dheema ho sakta hai)
+BG_REC_PIXEL_W = 810                    # recording ki asli chaudai: 810x1440 -> 1080x1920 (bahut badhane par runner dheema hota hai)
 BG_SCROLL_PX_PER_SEC = 120
 
 SCROLL_JS = """
@@ -86,6 +86,37 @@ SCROLL_JS = """
   requestAnimationFrame(step);
 })
 """
+
+# Kai sites ki max-width hoti hai (beech me patla column, dono taraf khali). Pehle us column ki
+# chaudai napte hain, phir recording usi chaudai ke viewport me karte hain taaki page poora 9:16 bhare.
+MEASURE_JS = """
+() => {
+  const vw = window.innerWidth;
+  let best = 0;
+  for (const el of document.querySelectorAll('body *')) {
+    const r = el.getBoundingClientRect();
+    if (r.height > 300 && r.width > 200 && r.width < vw - 12 && r.width > best) best = r.width;
+  }
+  return best;
+}
+"""
+
+# Page chhota ho to uska main column neeche tak lamba kar do (neeche ka khali ग्रे हिस्सा na dikhe)
+FILL_JS = """
+() => {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  let best = null, area = 0;
+  for (const el of document.querySelectorAll('body *')) {
+    const r = el.getBoundingClientRect();
+    if (r.height > 200 && r.width >= vw * 0.9 && r.width * r.height > area) { best = el; area = r.width * r.height; }
+  }
+  if (best && best.getBoundingClientRect().height < vh) best.style.minHeight = vh + 'px';
+  document.documentElement.style.minHeight = '100vh';
+  return !!best;
+}
+"""
+
+HIDE_SCROLLBAR_CSS = "::-webkit-scrollbar{display:none!important} html{scrollbar-width:none!important}"
 
 SENTENCE_END = re.compile(r"[.!?।|]$")
 SOFT_PAUSE = re.compile(r"[,;:–—-]$")
@@ -377,8 +408,18 @@ def hinglish_words(words, scenes):
 # ==========================================
 # 2. CARD (image poori dikhe, crop na ho)
 # ==========================================
-def make_card(img_path):
+# Ek hi image dobara aaye to alag hissa dikhao (pura / bayan / dayan / beech ka zoom)
+CROP_VARIANTS = [None, (0.0, 0.0, 0.58, 1.0), (0.42, 0.0, 1.0, 1.0), (0.18, 0.12, 0.82, 0.88)]
+
+
+def make_card(img_path, variant=0):
     img = Image.open(img_path).convert("RGB")
+    crop = CROP_VARIANTS[variant % len(CROP_VARIANTS)]
+    if crop:
+        w0, h0 = img.size
+        box = (int(crop[0] * w0), int(crop[1] * h0), int(crop[2] * w0), int(crop[3] * h0))
+        if box[2] - box[0] >= 300 and box[3] - box[1] >= 300:
+            img = img.crop(box)
     iw, ih = img.size
     s = min(CARD_BOX_W / iw, CARD_BOX_H / ih, 2.5)
     nw, nh = max(int(iw * s), 2), max(int(ih * s), 2)
@@ -610,8 +651,21 @@ def _ffmpeg():
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
+def _open_page(ctx, url):
+    page = ctx.new_page()
+    try:
+        page.goto(url, wait_until="networkidle", timeout=40000)
+    except Exception:
+        page.goto(url, wait_until="domcontentloaded", timeout=40000)
+    try:   # scrollbar recording me na dikhe
+        page.add_style_tag(content=HIDE_SCROLLBAR_CSS)
+    except Exception:
+        pass
+    return page
+
+
 def record_site_background(url, duration, work_dir):
-    """Playwright se site ko portrait me record karo. (raw_path, shuru ka load time) lautata hai."""
+    """Playwright se site ko 9:16 me record karo. (raw_path, shuru ka load time) lautata hai."""
     from playwright.sync_api import sync_playwright
     os.makedirs(work_dir, exist_ok=True)
     for f in os.listdir(work_dir):
@@ -625,19 +679,41 @@ def record_site_background(url, duration, work_dir):
     print(f"📹 Recording background site for ~{total:.0f}s: {url}")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+
+        # 1) page ke content column ki chaudai nap lo
+        rec_w = BG_REC_W
+        env_w = os.getenv("REEL_BG_WIDTH", "").strip()
+        if env_w.isdigit():
+            rec_w = int(env_w)
+        else:
+            try:
+                mctx = browser.new_context(viewport={"width": BG_REC_W, "height": BG_REC_H})
+                mpage = _open_page(mctx, url)
+                mpage.wait_for_timeout(1500)
+                measured = float(mpage.evaluate(MEASURE_JS) or 0)
+                mctx.close()
+                if 320 <= measured < BG_REC_W - 12:
+                    rec_w = int(round(measured))
+                print(f"📐 Page column width: {measured:.0f}px")
+            except Exception as e:
+                print(f"⚠️ Page width measure fail ({e}); default {BG_REC_W}px")
+        rec_w -= rec_w % 2
+        rec_h = int(round(rec_w * 16 / 9))
+        dsf = BG_REC_PIXEL_W / float(rec_w)
+        vid_w = BG_REC_PIXEL_W
+        vid_h = int(round(BG_REC_PIXEL_W * 16 / 9 / 2.0)) * 2
+        print(f"📐 Recording viewport {rec_w}x{rec_h} (scale {dsf:.2f}) -> video {vid_w}x{vid_h}")
+
+        # 2) us chaudai ke 9:16 viewport me record karo
         ctx = browser.new_context(
-            viewport={"width": BG_REC_W, "height": BG_REC_H},
-            device_scale_factor=BG_DSF,
+            viewport={"width": rec_w, "height": rec_h},
+            device_scale_factor=dsf,
             record_video_dir=work_dir,
-            record_video_size={"width": int(BG_REC_W * BG_DSF), "height": int(BG_REC_H * BG_DSF)})
+            record_video_size={"width": vid_w, "height": vid_h})
         t_open = time.time()
-        page = ctx.new_page()
+        page = _open_page(ctx, url)
         try:
-            page.goto(url, wait_until="networkidle", timeout=40000)
-        except Exception:
-            page.goto(url, wait_until="domcontentloaded", timeout=40000)
-        try:   # scrollbar recording me na dikhe
-            page.add_style_tag(content="::-webkit-scrollbar{display:none!important} html{scrollbar-width:none!important}")
+            page.evaluate(FILL_JS)
         except Exception:
             pass
         page.wait_for_timeout(2500)
@@ -684,7 +760,12 @@ def build_reel(audio_path, chunk_infos, scenes, images, kw_to_path, output_mp4,
     words = build_word_timings(chunk_infos, src_total, speed)
     plan = plan_scenes(scenes, words, total)
     paths = assign_images(plan, kw_to_path, images)
-    cards = [make_card(p) for p in paths]
+    seen, cards = {}, []
+    for pth in paths:           # same image repeat ho to har baar alag crop
+        cards.append(make_card(pth, seen.get(pth, 0)))
+        seen[pth] = seen.get(pth, 0) + 1
+    if len(seen) < len(paths):
+        print(f"⚠️ {len(paths)} scenes me sirf {len(seen)} alag images; baaki me alag crop use hua")
     n = len(plan)
     for i, p in enumerate(plan):
         print(f"🎞️ Scene {i + 1}/{n}: {p['start']:.1f}s -> {p['end']:.1f}s | {p['keyword']}")
