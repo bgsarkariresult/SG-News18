@@ -48,8 +48,8 @@ MAX_CHUNK_CHARACTERS = 160     # chhote chunks = captions ki timing zyada sahi
 MAX_RETRIES = 2
 VOICE_SPEED = 1.10             # final voice speed (captions/scene timing isi se nikalti hai)
 
-# Is website ki recording blur hokar reel ke peeche chalegi
-BG_SITE_URL = os.getenv("REEL_BG_URL", "https://bgnewswab.github.io/sgnewswab/index.html").strip()
+# Peeche website ki recording (bina blur) chalegi: default me wahi article link jo aap dete ho
+BG_SITE_URL = os.getenv("REEL_BG_URL", "").strip()   # khali = jo article link diya, wahi peeche record hoga
 
 OUTPUT_DIR = "reel_outputs"
 LAST_UPLOAD_ERROR = ""   # upload fail hone ki wajah (Telegram message me jaati hai)
@@ -170,7 +170,7 @@ def generate_teen_friendly_script(article_text):
        - बीच में: मुख्य facts तेज़ गति से, साफ और interesting
        - आखिरी 4-5 सेकंड: Soft CTA (जैसे "Full story के लिए कमेंट करो", "शेयर कर दो दोस्तों के साथ", "Follow for more updates")
     4. कुल लंबाई: Voiceover लगभग 28-32 सेकंड (लगभग 70-85 शब्द)।
-    5. Scenes: voiceover को क्रम से 5 से 6 scenes में बाँटो। हर scene में (a) उस हिस्से का Hindi voiceover text और (b) उस वक़्त स्क्रीन पर दिखाने लायक image का 1 short English search keyword (सिर्फ real people, places, events) हो। सभी scenes के text को क्रम से जोड़ने पर पूरा voiceover बनना चाहिए: कुछ भी छूटे या दोहराया न जाए। Hook पहले scene में और CTA आख़िरी scene में हो।
+    5. Scenes: voiceover को क्रम से 5 से 6 scenes में बाँटो। हर scene में (a) उस हिस्से का Hindi voiceover text और (b) उस वक़्त स्क्रीन पर दिखाने लायक image का 1 short English search keyword (सिर्फ real people, places, events) हो। सभी scenes के text को क्रम से जोड़ने पर पूरा voiceover बनना चाहिए: कुछ भी छूटे या दोहराया न जाए। Hook पहले scene में और CTA आख़िरी scene में हो। हर scene में (c) "hinglish" भी दो: वही वाक्य Roman अक्षरों में, जैसे लोग WhatsApp पर लिखते हैं (kya, hai, mein, nahi, aaj), शब्द-दर-शब्द उतने ही शब्द और उसी क्रम में, कोई शब्द जोड़ना या हटाना नहीं। नाम और English शब्द सामान्य spelling में लिखो (Smriti Mandhana, Team India, T20)।
     6. Video Title: Catchy & Clickworthy Title with Emojis (Max 80-90 chars).
     7. Video Description: Summary of the news + Call To Action + Relevant Trending Hashtags (#Shorts #Viral #News).
 
@@ -182,9 +182,9 @@ def generate_teen_friendly_script(article_text):
         "title": "Viral Catchy Title with Emojis 😱🔥",
         "description": "Short engaging description of the news...\\n\\nFollow for more updates! 🚀\\n\\n#Shorts #News #Trending #Viral",
         "scenes": [
-            {{"text": "Hook वाला हिस्सा (Hindi voiceover)", "keyword": "english keyword 1"}},
-            {{"text": "अगला हिस्सा (Hindi voiceover)", "keyword": "english keyword 2"}},
-            {{"text": "CTA वाला आख़िरी हिस्सा (Hindi voiceover)", "keyword": "english keyword 5"}}
+            {{"text": "Hook वाला हिस्सा (Hindi voiceover)", "hinglish": "same words in Roman Hinglish", "keyword": "english keyword 1"}},
+            {{"text": "अगला हिस्सा (Hindi voiceover)", "hinglish": "same words in Roman Hinglish", "keyword": "english keyword 2"}},
+            {{"text": "CTA वाला आख़िरी हिस्सा (Hindi voiceover)", "hinglish": "same words in Roman Hinglish", "keyword": "english keyword 5"}}
         ]
     }}
     """
@@ -258,6 +258,7 @@ def generate_teen_friendly_script(article_text):
             for sc in data.get("scenes") or []:
                 if isinstance(sc, dict) and str(sc.get("text", "")).strip() and str(sc.get("keyword", "")).strip():
                     scenes.append({"text": " ".join(str(sc["text"]).split()),
+                                   "hinglish": " ".join(str(sc.get("hinglish", "")).split()),
                                    "keyword": str(sc["keyword"]).strip()})
             if scenes:
                 script_text = " ".join(sc["text"] for sc in scenes)
@@ -272,14 +273,86 @@ def generate_teen_friendly_script(article_text):
 # ==========================================
 # 2. REAL IMAGE DOWNLOADER (Strict Script Matching)
 # ==========================================
-def download_logo_free_images(keywords, output_folder="temp_images", article_image_url=None):
+def _ahash(path):
+    """Chhota perceptual hash: ek jaisi dikhne wali images pakadne ke liye."""
+    from PIL import Image
+    g = Image.open(path).convert("L").resize((8, 8), Image.BILINEAR)
+    px = list(g.getdata())
+    avg = sum(px) / 64.0
+    return sum(1 << i for i, v in enumerate(px) if v >= avg)
+
+
+def _is_dup(h, hashes):
+    return any(bin(h ^ x).count("1") <= 6 for x in hashes)
+
+
+def pick_relevant_image(cand_paths, keyword, scene_text, context=""):
+    """
+    Gemini (vision) se poochho ki kaunsi image is scene se sabse zyada match karti hai.
+    Index lautata hai; -1 = koi bhi sahi nahi; None = check nahi ho paya (Gemini fail).
+    """
+    if not GEMINI_CLIENTS or not cand_paths:
+        return None
+    try:
+        from google.genai import types
+        from PIL import Image
+    except Exception:
+        return None
+
+    parts = []
+    for i, path in enumerate(cand_paths):
+        try:
+            im = Image.open(path).convert("RGB")
+            im.thumbnail((640, 640))
+            buf = BytesIO()
+            im.save(buf, "JPEG", quality=80)
+            parts.append(f"Image {i}:")
+            parts.append(types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"))
+        except Exception:
+            continue
+    if not parts:
+        return None
+
+    instruction = (
+        "You are choosing the visual for ONE scene of a Hindi news reel.\n"
+        f"News headline/context: {context}\n"
+        f"Scene voiceover (Hindi): {scene_text}\n"
+        f"Image search keyword: {keyword}\n\n"
+        "Below are candidate images labelled Image 0, Image 1, ... Pick the ONE image that best shows "
+        "the exact person / place / team / event this scene is about. Reject images of a different person, "
+        "a different sport or topic, images with big text overlays, logos or watermarks, collages, memes, "
+        "screenshots or cartoons. "
+        'Reply ONLY with JSON: {"best": <index, or -1 if none of them matches>, "reason": "short"}'
+    )
+    models = list(dict.fromkeys([os.getenv("GEMINI_MODEL_NAME", "gemini-3.6-flash"), "gemini-3.7-flash"]))
+    for key_label, gclient in GEMINI_CLIENTS:
+        for model_name in models:
+            try:
+                resp = gclient.models.generate_content(model=model_name, contents=[instruction] + parts)
+                m = re.search(r"\{.*\}", (resp.text or ""), re.DOTALL)
+                if not m:
+                    continue
+                data = json.loads(m.group(0))
+                best = int(data.get("best", -1))
+                if best < -1 or best >= len(cand_paths):
+                    best = -1
+                print(f"🧠 Gemini image check [{keyword}] -> {best} ({str(data.get('reason', ''))[:80]})")
+                return best
+            except Exception as e:
+                print(f"⚠️ Image check {key_label} {model_name} failed: {str(e)[:80]}")
+    return None
+
+
+def download_logo_free_images(keywords, output_folder="temp_images", article_image_url=None,
+                              scene_texts=None, context=""):
     print("📸 Downloading relevant images strictly according to script keywords...")
-    
+    scene_texts = scene_texts or {}
+
     if os.path.exists(output_folder):
         for f in os.listdir(output_folder):
             try:
                 os.remove(os.path.join(output_folder, f))
-            except:
+            except Exception:
                 pass
     os.makedirs(output_folder, exist_ok=True)
 
@@ -289,6 +362,8 @@ def download_logo_free_images(keywords, output_folder="temp_images", article_ima
 
     downloaded = []
     used_by_keyword = {}
+    chosen_hashes = []
+    counter = {"n": 0}
 
     def save_img(url, name):
         try:
@@ -307,52 +382,77 @@ def download_logo_free_images(keywords, output_folder="temp_images", article_ima
             path = os.path.join(output_folder, name)
             with open(path, "wb") as f:
                 f.write(r.content)
-            print(f"✅ Saved: {name} ({img.width}x{img.height})")
             return path
         except Exception as e:
             print(f"⚠️ Rejected {url[:60]}: {e}")
             return None
 
+    def collect(ddgs, query, cands, cand_hashes, limit, max_results):
+        results = list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
+        for r in results:
+            if len(cands) >= limit:
+                break
+            img_url = r.get("image")
+            if not img_url:
+                continue
+            counter["n"] += 1
+            path = save_img(img_url, f"cand_{counter['n']:03d}.jpg")
+            if not path:
+                continue
+            try:
+                h = _ahash(path)
+            except Exception:
+                continue
+            if _is_dup(h, chosen_hashes) or _is_dup(h, cand_hashes):
+                os.remove(path)
+                continue
+            cands.append(path)
+            cand_hashes.append(h)
+
     clean_keywords = [k.strip() for k in keywords if k and k.strip()]
     if not clean_keywords:
         return downloaded, used_by_keyword
+
+    # Article ki apni image: sabse relevant candidate (ek hi scene me use hogi)
+    article_path = None
+    if article_image_url:
+        article_path = save_img(article_image_url, "article.jpg")
+        if article_path:
+            print("🖼️ Article image mil gayi (candidate me judegi)")
 
     try:
         with DDGS() as ddgs:
             for kw in clean_keywords:
                 try:
-                    search_query = f"{kw}"
-                    print(f"🔍 Searching image for: '{search_query}'")
-                    results = list(ddgs.images(search_query, max_results=8, safesearch="moderate"))
-                    
-                    found = False
-                    for r in results:
-                        img_url = r.get("image")
-                        if not img_url:
-                            continue
-                        name = f"img_{len(downloaded)+1:03d}.jpg"
-                        path = save_img(img_url, name)
-                        if path:
-                            downloaded.append(path)
-                            used_by_keyword[kw] = path
-                            found = True
-                            break
-                    
-                    if not found:
-                        search_query_alt = f"{kw} hd photo"
-                        print(f"🔍 Retry searching image for: '{search_query_alt}'")
-                        results = list(ddgs.images(search_query_alt, max_results=5, safesearch="moderate"))
-                        for r in results:
-                            img_url = r.get("image")
-                            if not img_url:
-                                continue
-                            name = f"img_{len(downloaded)+1:03d}.jpg"
-                            path = save_img(img_url, name)
-                            if path:
-                                downloaded.append(path)
-                                used_by_keyword[kw] = path
-                                break
+                    print(f"🔍 Searching image for: '{kw}'")
+                    cands, cand_hashes = [], []
+                    if article_path and article_path not in downloaded:
+                        cands.append(article_path)
+                        cand_hashes.append(_ahash(article_path))
+                    collect(ddgs, kw, cands, cand_hashes, limit=5, max_results=12)
+                    if len(cands) < 3:
+                        print(f"🔍 Retry searching image for: '{kw} photo'")
+                        collect(ddgs, f"{kw} photo", cands, cand_hashes, limit=5, max_results=8)
 
+                    best = None
+                    if cands:
+                        choice = pick_relevant_image(cands, kw, scene_texts.get(kw, ""), context)
+                        if choice is None:          # Gemini check nahi ho paya: pehli valid image
+                            best = cands[0]
+                        elif choice >= 0:
+                            best = cands[choice]
+                        else:
+                            print(f"⚠️ '{kw}' ke liye koi image script se match nahi hui")
+
+                    if best:
+                        downloaded.append(best)
+                        used_by_keyword[kw] = best
+                        chosen_hashes.append(_ahash(best))
+                        print(f"✅ Selected for '{kw}': {os.path.basename(best)}")
+
+                    for c in cands:        # chune hue ke alawa candidates hata do
+                        if c not in downloaded and c != article_path and os.path.exists(c):
+                            os.remove(c)
                     time.sleep(1.2)
                 except Exception as e:
                     print(f"⚠️ Search failed for '{kw}': {e}")
@@ -361,11 +461,9 @@ def download_logo_free_images(keywords, output_folder="temp_images", article_ima
     except Exception as e:
         print(f"⚠️ DDGS main error: {e}")
 
-    # Article Image Fallback agar download kam pade
-    if not downloaded and article_image_url:
-        path = save_img(article_image_url, "img_001.jpg")
-        if path:
-            downloaded.append(path)
+    # Article image kisi scene me na chuni gayi ho to bhi spare ki tarah rakho (galat image se behtar)
+    if article_path and article_path not in downloaded:
+        downloaded.append(article_path)
 
     print(f"✅ Total script matched images ready: {len(downloaded)} | Keywords mapped: {list(used_by_keyword.keys())}")
     return downloaded, used_by_keyword
@@ -602,8 +700,17 @@ def main():
     for i, sc in enumerate(scenes, start=1):
         print(f"🎞️ Scene {i} [{sc['keyword']}]: {sc['text']}")
 
+    for sc in scenes:   # Hinglish na mila ho to local transliteration
+        if not sc.get("hinglish"):
+            sc["hinglish"] = reel_editing.devanagari_to_hinglish(sc["text"])
+        print(f"   ↳ Hinglish: {sc['hinglish']}")
+
     unique_kws = list(dict.fromkeys(sc["keyword"] for sc in scenes))
-    images, kw_to_path = download_logo_free_images(unique_kws, article_image_url=article_img)
+    scene_texts = {}
+    for sc in scenes:
+        scene_texts.setdefault(sc["keyword"], sc["text"])
+    images, kw_to_path = download_logo_free_images(
+        unique_kws, article_image_url=article_img, scene_texts=scene_texts, context=yt_title)
     if not images:
         raise Exception("Koi image nahi mili.")
 
@@ -613,7 +720,7 @@ def main():
     output_mp4 = os.path.join(OUTPUT_DIR, f"News_Reel_{time.strftime('%Y%m%d_%H%M%S')}.mp4")
     final_video = reel_editing.build_reel(
         audio_file, chunk_infos, scenes, images, kw_to_path, output_mp4,
-        bg_url=BG_SITE_URL, speed=VOICE_SPEED)
+        bg_url=(BG_SITE_URL or url), speed=VOICE_SPEED)
 
     print("\n🎉 SUCCESS! Reel ban gaya.")
     print(f"File: {os.path.abspath(final_video)}")
