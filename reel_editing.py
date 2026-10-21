@@ -742,8 +742,9 @@ def prepare_background_video(raw_path, out_path, start_sec, duration):
 # 6. MAIN BUILDER
 # ==========================================
 def build_reel(audio_path, chunk_infos, scenes, images, kw_to_path, output_mp4,
-               bg_url=None, speed=1.10, work_dir="reel_work", bg_video=None):
-    """bg_video: pehle se bani website recording ka path (to bg_url record nahi hota)."""
+               bg_url=None, speed=1.10, work_dir="reel_work", bg_video=None, bg_skip=0.0):
+    """bg_video: pehle se bani website recording ka path (to bg_url record nahi hota).
+    bg_skip: us recording ke shuru ke itne second (page load) kaat do."""
     from moviepy.editor import (AudioFileClip, VideoFileClip, ImageClip,
                                 CompositeVideoClip, vfx)
     os.makedirs(work_dir, exist_ok=True)
@@ -793,7 +794,7 @@ def build_reel(audio_path, chunk_infos, scenes, images, kw_to_path, output_mp4,
     if bg_url or bg_video:
         try:
             if bg_video:
-                raw, skip = bg_video, 0.0
+                raw, skip = bg_video, float(bg_skip)
             else:
                 raw, skip = record_site_background(bg_url, total, work_dir)
             prepared = os.path.join(work_dir, "bg_site.mp4")
