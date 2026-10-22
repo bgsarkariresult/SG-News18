@@ -26,8 +26,6 @@ except ImportError:
     print("❌ ddgs library nahi mili. Pehle yeh chalao: pip install ddgs")
     exit()
 
-import long_video_editing
-
 # ==========================================
 # 0. FFMPEG PATH
 # ==========================================
@@ -762,35 +760,19 @@ def main():
         audio_file, chunk_infos, scenes, images, kw_to_path, output_mp4,
         bg_url=(BG_SITE_URL or url), speed=VOICE_SPEED)
 
-    # Long video bhi banayein; renderer ko audio/images ready hone ke baad chalana hai.
-    long_output_mp4 = os.path.join(
-        OUTPUT_DIR, f"News_Long_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
-    )
-    long_video = long_video_editing.build_long_video(
-        audio_file,
-        chunk_infos,
-        scenes,
-        images,
-        kw_to_path,
-        long_output_mp4,
-        bg_url=(BG_SITE_URL or url),
-        speed=1.05,
-    )
-
-    print("\n🎉 SUCCESS! Reel aur Long Video dono ban gaye.")
+    print("\n🎉 SUCCESS! Reel ban gayi.")
     print(f"Reel: {os.path.abspath(reel_video)}")
-    print(f"Long Video: {os.path.abspath(long_video)}")
 
     if not yt_title:
         yt_title = script_text[:90]
     if not yt_desc:
         yt_desc = script_text + "\n\n#Shorts #News #Hindi #BreakingNews"
 
-    video_id = upload_to_youtube(final_video, yt_title, yt_desc)
+    video_id = upload_to_youtube(reel_video, yt_title, yt_desc)
     if video_id:
         notify_telegram(f"✅ <b>Reel upload ho gaya (Unlisted)</b>\n🎬 {yt_title}\n🖼️ Images: {got}/{len(unique_kws)} scenes\n🔗 https://youtube.com/shorts/{video_id}")
     else:
-        notify_telegram(f"✅ Reel ban gaya (YouTube upload nahi hua): {os.path.basename(final_video)}\n⚠️ Wajah: {LAST_UPLOAD_ERROR[:300] or 'pata nahi'}")
+        notify_telegram(f"✅ Reel ban gaya (YouTube upload nahi hua): {os.path.basename(reel_video)}\n⚠️ Wajah: {LAST_UPLOAD_ERROR[:300] or 'pata nahi'}")
 
 
 if __name__ == "__main__":
