@@ -269,7 +269,54 @@ def generate_teen_friendly_script(article_text):
                 keywords = data.get("search_keywords", [])
             return data.get("title", ""), data.get("description", ""), script_text, keywords, scenes
 
-    raise Exception("❌ All AI Generators failed. Please check internet connection.")
+    # 5. Offline fallback: never stop the Reel just because all AI APIs are down.
+    # This uses only the scraped article text; it does not invent new facts.
+    print("⚠️ All AI providers unavailable. Building a basic script locally from article text...")
+    clean = re.sub(r"<[^>]+>", " ", str(article_text or ""))
+    clean = re.sub(r"https?://\\S+", " ", clean)
+    clean = re.sub(r"(पूरा विवरण पढ़ें|मुख्य बिंदु|Quick Summary|Follow for more updates)", " ", clean, flags=re.I)
+    clean = re.sub(r"\\s+", " ", clean).strip()
+    if len(clean) < 100:
+        raise Exception("Article text is too short to create a safe fallback Reel.")
+
+    # Prefer complete sentences; cap the voiceover so rendering stays short.
+    sentences = [x.strip(" \\t\\n-•") for x in re.split(r"(?<=[।.!?])\\s+", clean)
+                 if len(x.strip()) >= 20]
+    if not sentences:
+        sentences = [clean]
+    selected = []
+    count = 0
+    for sentence in sentences:
+        words = sentence.split()
+        if count >= 82:
+            break
+        remaining = 82 - count
+        selected.extend(words[:remaining])
+        count += min(len(words), remaining)
+    voice_words = " ".join(selected).strip()
+    if len(voice_words.split()) < 20:
+        voice_words = " ".join(clean.split()[:82])
+
+    # Split the extracted facts into 5 sequential scenes; local transliteration is added downstream.
+    words = voice_words.split()
+    chunk_size = max(1, (len(words) + 4) // 5)
+    scenes = []
+    title_source = " ".join(clean.split()[:16]).strip(" ,।.!:")
+    title = (title_source[:82].rstrip() + " 🔥") if title_source else "SG News18 की ताज़ा खबर 🔥"
+    english_terms = re.findall(r"[A-Za-z][A-Za-z0-9'-]*", clean[:900])
+    search_terms = " ".join(english_terms[:5]) or "India news"
+    for i in range(0, len(words), chunk_size):
+        chunk = " ".join(words[i:i + chunk_size]).strip()
+        if chunk:
+            scenes.append({
+                "text": chunk,
+                "hinglish": "",
+                "keyword": search_terms,
+                "keyword_alt": search_terms
+            })
+    description = title + "\\n\\nखबर की जानकारी के आधार पर तैयार की गई Reel.\\n\\n#SGNews18 #HindiNews #NewsReels #Shorts"
+    print(f"✅ Local fallback created: {len(words)} words, {len(scenes)} scenes (no AI API required).")
+    return title, description, voice_words, [search_terms], scenes
 
 # ==========================================
 # 2. REAL IMAGE DOWNLOADER (Strict Script Matching)
