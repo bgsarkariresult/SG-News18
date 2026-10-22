@@ -269,54 +269,7 @@ def generate_teen_friendly_script(article_text):
                 keywords = data.get("search_keywords", [])
             return data.get("title", ""), data.get("description", ""), script_text, keywords, scenes
 
-    # 5. Offline fallback: never stop the Reel just because all AI APIs are down.
-    # This uses only the scraped article text; it does not invent new facts.
-    print("⚠️ All AI providers unavailable. Building a basic script locally from article text...")
-    clean = re.sub(r"<[^>]+>", " ", str(article_text or ""))
-    clean = re.sub(r"https?://\\S+", " ", clean)
-    clean = re.sub(r"(पूरा विवरण पढ़ें|मुख्य बिंदु|Quick Summary|Follow for more updates)", " ", clean, flags=re.I)
-    clean = re.sub(r"\\s+", " ", clean).strip()
-    if len(clean) < 100:
-        raise Exception("Article text is too short to create a safe fallback Reel.")
-
-    # Prefer complete sentences; cap the voiceover so rendering stays short.
-    sentences = [x.strip(" \\t\\n-•") for x in re.split(r"(?<=[।.!?])\\s+", clean)
-                 if len(x.strip()) >= 20]
-    if not sentences:
-        sentences = [clean]
-    selected = []
-    count = 0
-    for sentence in sentences:
-        words = sentence.split()
-        if count >= 82:
-            break
-        remaining = 82 - count
-        selected.extend(words[:remaining])
-        count += min(len(words), remaining)
-    voice_words = " ".join(selected).strip()
-    if len(voice_words.split()) < 20:
-        voice_words = " ".join(clean.split()[:82])
-
-    # Split the extracted facts into 5 sequential scenes; local transliteration is added downstream.
-    words = voice_words.split()
-    chunk_size = max(1, (len(words) + 4) // 5)
-    scenes = []
-    title_source = " ".join(clean.split()[:16]).strip(" ,।.!:")
-    title = (title_source[:82].rstrip() + " 🔥") if title_source else "SG News18 की ताज़ा खबर 🔥"
-    english_terms = re.findall(r"[A-Za-z][A-Za-z0-9'-]*", clean[:900])
-    search_terms = " ".join(english_terms[:5]) or "India news"
-    for i in range(0, len(words), chunk_size):
-        chunk = " ".join(words[i:i + chunk_size]).strip()
-        if chunk:
-            scenes.append({
-                "text": chunk,
-                "hinglish": "",
-                "keyword": search_terms,
-                "keyword_alt": search_terms
-            })
-    description = title + "\\n\\nखबर की जानकारी के आधार पर तैयार की गई Reel.\\n\\n#SGNews18 #HindiNews #NewsReels #Shorts"
-    print(f"✅ Local fallback created: {len(words)} words, {len(scenes)} scenes (no AI API required).")
-    return title, description, voice_words, [search_terms], scenes
+    raise Exception("❌ All AI Generators failed. Please check internet connection.")
 
 # ==========================================
 # 2. REAL IMAGE DOWNLOADER (Strict Script Matching)
@@ -601,44 +554,16 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
 
 
 def generate_edge_tts_voice(text, output_audio_path):
-    """Try Edge Hindi TTS; if it returns no audio, use local eSpeak Hindi voice."""
-    import shutil
-    import subprocess
-
+    voice = "hi-IN-MadhurNeural"
     async def _save():
         import edge_tts
-        communicate = edge_tts.Communicate(text, "hi-IN-MadhurNeural", rate="+0%")
+        communicate = edge_tts.Communicate(text, voice, rate="+0%")
         await communicate.save(output_audio_path)
-
-    try:
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(_save())
-        finally:
-            loop.close()
-        if os.path.exists(output_audio_path) and os.path.getsize(output_audio_path) >= 1000:
-            return
-        raise RuntimeError("Edge TTS returned an empty audio file")
-    except Exception as edge_error:
-        print(f"⚠️ Edge TTS failed: {edge_error}. Trying local eSpeak-NG Hindi voice...")
-        wav_path = output_audio_path.rsplit(".", 1)[0] + "_espeak.wav"
-        espeak = shutil.which("espeak-ng") or shutil.which("espeak")
-        if not espeak:
-            raise RuntimeError("Edge TTS failed and espeak-ng is not installed") from edge_error
-        # Hindi voice is bundled by Ubuntu's espeak-ng-data package.
-        subprocess.run([espeak, "-v", "hi", "-s", "142", "-w", wav_path, text],
-                       check=True, capture_output=True, text=True)
-        if not os.path.exists(wav_path) or os.path.getsize(wav_path) < 1000:
-            raise RuntimeError("eSpeak-NG did not produce audio") from edge_error
-        ffmpeg_exe = os.path.join(FFMPEG_PATH, "ffmpeg.exe") if os.path.exists(os.path.join(FFMPEG_PATH, "ffmpeg.exe")) else "ffmpeg"
-        subprocess.run([ffmpeg_exe, "-y", "-i", wav_path, "-ar", "44100", "-ac", "2",
-                        "-b:a", "128k", output_audio_path], check=True, capture_output=True, text=True)
-        try:
-            os.remove(wav_path)
-        except OSError:
-            pass
-        print("✅ Local eSpeak-NG fallback audio created.")
+        
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_save())
+    loop.close()
 
 
 def generate_male_voice(text, output_audio_path):
