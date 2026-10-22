@@ -601,16 +601,44 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
 
 
 def generate_edge_tts_voice(text, output_audio_path):
-    voice = "hi-IN-MadhurNeural"
+    """Try Edge Hindi TTS; if it returns no audio, use local eSpeak Hindi voice."""
+    import shutil
+    import subprocess
+
     async def _save():
         import edge_tts
-        communicate = edge_tts.Communicate(text, voice, rate="+0%")
+        communicate = edge_tts.Communicate(text, "hi-IN-MadhurNeural", rate="+0%")
         await communicate.save(output_audio_path)
-        
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(_save())
-    loop.close()
+
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(_save())
+        finally:
+            loop.close()
+        if os.path.exists(output_audio_path) and os.path.getsize(output_audio_path) >= 1000:
+            return
+        raise RuntimeError("Edge TTS returned an empty audio file")
+    except Exception as edge_error:
+        print(f"⚠️ Edge TTS failed: {edge_error}. Trying local eSpeak-NG Hindi voice...")
+        wav_path = output_audio_path.rsplit(".", 1)[0] + "_espeak.wav"
+        espeak = shutil.which("espeak-ng") or shutil.which("espeak")
+        if not espeak:
+            raise RuntimeError("Edge TTS failed and espeak-ng is not installed") from edge_error
+        # Hindi voice is bundled by Ubuntu's espeak-ng-data package.
+        subprocess.run([espeak, "-v", "hi", "-s", "142", "-w", wav_path, text],
+                       check=True, capture_output=True, text=True)
+        if not os.path.exists(wav_path) or os.path.getsize(wav_path) < 1000:
+            raise RuntimeError("eSpeak-NG did not produce audio") from edge_error
+        ffmpeg_exe = os.path.join(FFMPEG_PATH, "ffmpeg.exe") if os.path.exists(os.path.join(FFMPEG_PATH, "ffmpeg.exe")) else "ffmpeg"
+        subprocess.run([ffmpeg_exe, "-y", "-i", wav_path, "-ar", "44100", "-ac", "2",
+                        "-b:a", "128k", output_audio_path], check=True, capture_output=True, text=True)
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
+        print("✅ Local eSpeak-NG fallback audio created.")
 
 
 def generate_male_voice(text, output_audio_path):
