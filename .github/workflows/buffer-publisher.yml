@@ -20,6 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Check Buffer API secret before doing any publishing work
+        env:
+          BUFFER_ACCESS_TOKEN: ${{ secrets.BUFFER_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "${BUFFER_ACCESS_TOKEN:-}" ]; then
+            echo "::error::Missing BUFFER_ACCESS_TOKEN. Add it under repository Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
       - name: Download the exact Reel artifact from the completed run
         uses: actions/download-artifact@v4
         with:
@@ -60,10 +70,15 @@ jobs:
           set -euo pipefail
           tag="sg-news18-reel-${SOURCE_RUN_ID}"
           # A public release asset gives Buffer a URL it can fetch without GitHub authentication.
-          gh release create "$tag" "$VIDEO" \
-            --repo "$REPOSITORY" \
-            --title "SG News18 Reel ${SOURCE_RUN_ID}" \
-            --notes "Automatically hosted Reel from successful SG News18 - Reels Maker run ${SOURCE_RUN_ID}."
+          if gh release view "$tag" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            # Safe to retry: replace the same run's asset rather than failing on an existing tag.
+            gh release upload "$tag" "$VIDEO" --repo "$REPOSITORY" --clobber
+          else
+            gh release create "$tag" "$VIDEO" \
+              --repo "$REPOSITORY" \
+              --title "SG News18 Reel ${SOURCE_RUN_ID}" \
+              --notes "Automatically hosted Reel from successful SG News18 - Reels Maker run ${SOURCE_RUN_ID}."
+          fi
           asset_url="https://github.com/${REPOSITORY}/releases/download/${tag}/${FILENAME}"
           echo "asset_url=$asset_url" >> "$GITHUB_OUTPUT"
           echo "Hosted Reel asset: $asset_url"
