@@ -5,7 +5,12 @@ on:
     inputs:
       article_url:
         description: "News article link (jaise https://bgnewswab.github.io/sgnewswab/article.html?id=112)"
-        required: true
+        required: false
+        default: "https://bgnewswab.github.io/sgnewswab/article.html?id=239"
+  push:
+    paths:
+      - "reels_maker.py"
+      - ".github/workflows/reels-bot.yml"
 
 jobs:
   make-reel:
@@ -38,7 +43,7 @@ jobs:
 
       - name: Make reel
         env:
-          ARTICLE_URL: ${{ github.event.inputs.article_url }}
+          ARTICLE_URL: ${{ github.event.inputs.article_url || 'https://bgnewswab.github.io/sgnewswab/article.html?id=239' }}
           GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
