@@ -774,6 +774,15 @@ def main():
     else:
         notify_telegram(f"✅ Reel ban gaya (YouTube upload nahi hua): {os.path.basename(reel_video)}\n⚠️ Wajah: {LAST_UPLOAD_ERROR[:300] or 'pata nahi'}")
 
+    # ---- Buffer (Instagram / Facebook Reels) ----
+    try:
+        from buffer_publisher import publish_reel_to_buffer
+        buffer_caption = f"{yt_title}\n\n{yt_desc}".strip()[:2000]
+        publish_reel_to_buffer(reel_video, buffer_caption, article_url=url)
+    except Exception as e:
+        print(f"⚠️ Buffer step fail: {e}")
+        notify_telegram(f"⚠️ Buffer step fail\n<code>{str(e)[:300]}</code>")
+
 
 if __name__ == "__main__":
     try:
