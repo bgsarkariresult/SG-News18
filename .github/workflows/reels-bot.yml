@@ -7,6 +7,9 @@ on:
         description: "News article link (jaise https://bgnewswab.github.io/sgnewswab/article.html?id=112)"
         required: true
 
+permissions:
+  contents: write   # Buffer ke liye reel GitHub Release par upload hoti hai
+
 jobs:
   make-reel:
     runs-on: ubuntu-latest
@@ -45,6 +48,9 @@ jobs:
           GEMINI_MODEL_NAME: gemini-3.6-flash
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BUFFER_ACCESS_TOKEN: ${{ secrets.BUFFER_ACCESS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUFFER_SERVICES: "instagram,facebook"
         run: python reels_maker.py
 
       - name: Save reel (download ke liye)
