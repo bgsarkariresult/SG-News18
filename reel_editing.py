@@ -39,7 +39,6 @@ FPS = 30
 
 # Image card
 CARD_BOX_W, CARD_BOX_H = 940, 860      # image is box ke andar poori fit hoti hai
-CARD_CENTER_X = W // 2
 CARD_CENTER_Y = 600
 CARD_RADIUS = 38
 CARD_BORDER = 8
@@ -618,7 +617,7 @@ def _scene_clip(card_arr, start, dur, idx, ttype, ov):
     clip = ImageClip(card_arr).set_duration(dur)
     clip = clip.resize(lambda t: scale(t))
     clip = clip.set_position(lambda t: (
-        int(round(CARD_CENTER_X + slide_dx(t) - cw * scale(t) / 2)),
+        int(round(W / 2 + slide_dx(t) - cw * scale(t) / 2)),
         int(round(CARD_CENTER_Y - ch * scale(t) / 2))))
     if idx > 0 and ov > 0:
         if ttype in ("fade", "zoom"):
@@ -742,16 +741,14 @@ def prepare_background_video(raw_path, out_path, start_sec, duration):
 # 6. MAIN BUILDER
 # ==========================================
 def build_reel(audio_path, chunk_infos, scenes, images, kw_to_path, output_mp4,
-               bg_url=None, speed=1.10, work_dir="reel_work", bg_video=None, bg_skip=0.0):
-    """bg_video: pehle se bani website recording ka path (to bg_url record nahi hota).
-    bg_skip: us recording ke shuru ke itne second (page load) kaat do."""
+               bg_url=None, speed=1.10, work_dir="reel_work"):
     from moviepy.editor import (AudioFileClip, VideoFileClip, ImageClip,
                                 CompositeVideoClip, vfx)
     os.makedirs(work_dir, exist_ok=True)
 
     audio_src = AudioFileClip(audio_path)
     src_total = float(audio_src.duration)
-    audio = audio_src.fx(vfx.speedx, speed) if abs(speed - 1.0) > 1e-3 else audio_src
+    audio = audio_src.fx(vfx.speedx, speed)
     total = float(audio.duration)
     print(f"🔊 Audio: {src_total:.2f}s -> {total:.2f}s after {speed}x")
 
@@ -791,12 +788,9 @@ def build_reel(audio_path, chunk_infos, scenes, images, kw_to_path, output_mp4,
 
     # background
     bg_layers = []
-    if bg_url or bg_video:
+    if bg_url:
         try:
-            if bg_video:
-                raw, skip = bg_video, float(bg_skip)
-            else:
-                raw, skip = record_site_background(bg_url, total, work_dir)
+            raw, skip = record_site_background(bg_url, total, work_dir)
             prepared = os.path.join(work_dir, "bg_site.mp4")
             prepare_background_video(raw, prepared, skip, total)
             bg = VideoFileClip(prepared).without_audio()
@@ -832,24 +826,3 @@ def build_reel(audio_path, chunk_infos, scenes, images, kw_to_path, output_mp4,
     audio_src.close()
     print(f"🚀 Final Reel Saved: {output_mp4}")
     return output_mp4
-
-
-# ==========================================
-# 7. LAYOUTS  (shorts = "vertical", lamba video = "wide")
-# ==========================================
-LAYOUTS = {
-    "vertical": dict(W=1080, H=1920, FPS=30,
-                     CARD_BOX_W=940, CARD_BOX_H=860, CARD_CENTER_X=540, CARD_CENTER_Y=600,
-                     CAPTION_CENTER_Y=1300, CAPTION_FONT_SIZE=80, CAPTION_MARGIN=60,
-                     CAPTION_WORDS_PER_LINE=3, CAPTION_STROKE=7),
-    "wide": dict(W=1920, H=1080, FPS=25,
-                 CARD_BOX_W=880, CARD_BOX_H=500, CARD_CENTER_X=960, CARD_CENTER_Y=440,
-                 CAPTION_CENTER_Y=930, CAPTION_FONT_SIZE=64, CAPTION_MARGIN=140,
-                 CAPTION_WORDS_PER_LINE=4, CAPTION_STROKE=6),
-}
-
-
-def set_layout(name):
-    """Sab size/position settings ek saath badal do. build_reel se pehle ek baar bulao."""
-    globals().update(LAYOUTS[name])
-    _FONT_CACHE.clear()
