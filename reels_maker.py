@@ -269,7 +269,37 @@ def generate_teen_friendly_script(article_text):
                 keywords = data.get("search_keywords", [])
             return data.get("title", ""), data.get("description", ""), script_text, keywords, scenes
 
-    raise Exception("❌ All AI Generators failed. Please check internet connection.")
+    # 5. Offline fallback: article-based script, so a temporary AI quota/provider outage
+    # does not stop the entire Reel pipeline. Use only text already present in the article.
+    print("⚠️ AI providers unavailable. Creating a basic script from article text (offline fallback)...")
+    clean_text = re.sub(r"\\s+", " ", str(article_text or "")).strip()
+    clean_text = re.sub(r"(?i)पूरा विवरण पढ़ें|मुख्य बिंदु \\(Quick Summary\\)", " ", clean_text)
+    clean_text = re.sub(r"\\s+", " ", clean_text).strip(" .|:-")
+    if len(clean_text) < 80:
+        raise Exception("AI providers failed and article text is too short for offline script fallback.")
+
+    # Prefer the article headline for title/search terms; keep fallback factual.
+    headline = re.split(r"\\s+[|—–-]\\s+|📌|मुख्य बिंदु", clean_text, maxsplit=1)[0].strip()
+    title = (headline[:82].rstrip(" ,.-") + " 📰") if headline else "आज की बड़ी खबर 📰"
+    description = f"{headline}\\n\\nपूरी खबर के लिए SG News18 देखें।\\n\\n#Shorts #News #Hindi"
+
+    # Split article-derived text into 5 short, sequential scene chunks without inventing facts.
+    words = clean_text.split()
+    target_words = min(85, len(words))
+    words = words[:target_words]
+    scene_count = min(5, max(3, (len(words) + 16) // 17))
+    chunk_size = max(1, (len(words) + scene_count - 1) // scene_count)
+    chunks = [" ".join(words[i:i + chunk_size]).strip() for i in range(0, len(words), chunk_size)]
+    chunks = [chunk for chunk in chunks if chunk]
+    search_keyword = " ".join(re.findall(r"[A-Za-z0-9]+", headline)[:4]) or "India news"
+    scenes = [
+        {"text": chunk, "hinglish": "", "keyword": search_keyword, "keyword_alt": "India news"}
+        for chunk in chunks
+    ]
+    script_text = " ".join(scene["text"] for scene in scenes)
+    keywords = [scene["keyword"] for scene in scenes]
+    print("✅ Offline article-based script created. Please review factual wording in the generated Reel.")
+    return title, description, script_text, keywords, scenes
 
 # ==========================================
 # 2. REAL IMAGE DOWNLOADER (Strict Script Matching)
