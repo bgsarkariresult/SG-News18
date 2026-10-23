@@ -272,16 +272,16 @@ def generate_teen_friendly_script(article_text):
     # 5. Offline fallback: article-based script, so a temporary AI quota/provider outage
     # does not stop the entire Reel pipeline. Use only text already present in the article.
     print("⚠️ AI providers unavailable. Creating a basic script from article text (offline fallback)...")
-    clean_text = re.sub(r"\\s+", " ", str(article_text or "")).strip()
-    clean_text = re.sub(r"(?i)पूरा विवरण पढ़ें|मुख्य बिंदु \\(Quick Summary\\)", " ", clean_text)
-    clean_text = re.sub(r"\\s+", " ", clean_text).strip(" .|:-")
+    clean_text = re.sub(r"\s+", " ", str(article_text or "")).strip()
+    clean_text = re.sub(r"(?i)पूरा विवरण पढ़ें|मुख्य बिंदु \(Quick Summary\)", " ", clean_text)
+    clean_text = re.sub(r"\s+", " ", clean_text).strip(" .|:-")
     if len(clean_text) < 80:
         raise Exception("AI providers failed and article text is too short for offline script fallback.")
 
     # Prefer the article headline for title/search terms; keep fallback factual.
-    headline = re.split(r"\\s+[|—–-]\\s+|📌|मुख्य बिंदु", clean_text, maxsplit=1)[0].strip()
+    headline = re.split(r"\s+[|—–-]\s+|📌|मुख्य बिंदु", clean_text, maxsplit=1)[0].strip()
     title = (headline[:82].rstrip(" ,.-") + " 📰") if headline else "आज की बड़ी खबर 📰"
-    description = f"{headline}\\n\\nपूरी खबर के लिए SG News18 देखें।\\n\\n#Shorts #News #Hindi"
+    description = f"{headline}\n\nपूरी खबर के लिए SG News18 देखें।\n\n#Shorts #News #Hindi"
 
     # Split article-derived text into 5 short, sequential scene chunks without inventing facts.
     words = clean_text.split()
