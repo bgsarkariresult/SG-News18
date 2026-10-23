@@ -292,6 +292,8 @@ def pick_relevant_image(cand_paths, keyword, scene_text, context=""):
     Gemini (vision) se poochho ki kaunsi image is scene se sabse zyada match karti hai.
     (index, match 0-10) lautata hai; index -1 = koi bhi sahi nahi; None = check nahi ho paya (Gemini fail).
     """
+    if not IMAGE_AI_CHECK:      # AI check band: DuckDuckGo results ko keyword-filter + ranking se chuna jata hai
+        return None
     if not GEMINI_CLIENTS or not cand_paths:
         return None
     try:
@@ -346,6 +348,80 @@ def pick_relevant_image(cand_paths, keyword, scene_text, context=""):
     return None
 
 
+IMAGE_AI_CHECK = os.getenv("IMAGE_AI_CHECK", "0").strip() == "1"   # "1" karoge to Gemini check wapas chalu
+
+# ---- DuckDuckGo se sahi image chunne ke liye filter + ranking (bina AI) ----
+BLOCKED_IMG_DOMAINS = (
+    "pxhere", "pixabay", "pexels", "unsplash", "shutterstock", "istockphoto", "alamy", "dreamstime",
+    "vecteezy", "freepik", "123rf", "depositphotos", "adobestock", "stock.adobe", "gettyimages",
+    "pngtree", "clipartmax", "vexels", "wallpaperflare", "pinterest", "alphacoders", "wikihow",
+)
+BAD_TITLE_WORDS = ("diagram", "vector", "clipart", "clip art", "cartoon", "infographic", "meme",
+                   "stock photo", "illustration", "anatomy", "icon set", "template")
+NEWS_DOMAINS = (
+    "ndtv", "indiatoday", "espncricinfo", "cricbuzz", "timesofindia", "hindustantimes", "news18",
+    "indianexpress", "bcci", "jagran", "bhaskar", "aajtak", "abplive", "reuters", "thehindu",
+    "livemint", "firstpost", "sportstar", "wikimedia", "zeenews", "amarujala", "livehindustan",
+)
+GENERIC_WORDS = {
+    "the", "and", "for", "with", "news", "photo", "image", "pic", "picture", "celebration", "celebrating",
+    "fans", "fan", "crowd", "stadium", "ground", "field", "batting", "bowling", "player", "players",
+    "team", "match", "game", "logo", "official", "latest", "live", "update", "updates", "new", "vs",
+    "people", "group", "meeting", "building", "office", "flag", "city", "road", "report", "reaction",
+}
+
+
+def _kw_tokens(text):
+    words = re.findall(r"[A-Za-z0-9]+", (text or "").lower())
+    toks = [w for w in words if len(w) > 2 and w not in GENERIC_WORDS]
+    return list(dict.fromkeys(toks))
+
+
+def _rank_image_results(results, tokens):
+    """DDG results me se wahi rakhta hai jinke title/url me scene ke asli naam (person/team/jagah) aate hain,
+    stock/clipart/diagram wali sites hatata hai, aur best pehle rakhta hai."""
+    need = 0 if not tokens else (1 if len(tokens) == 1 else 2)
+    ranked = []
+    for r in results:
+        img = r.get("image") or ""
+        if not img:
+            continue
+        page = (r.get("url") or "")
+        hay = f"{r.get('title') or ''} {page} {img}".lower()
+        domain_blob = f"{img} {page}".lower()
+        if any(b in domain_blob for b in BLOCKED_IMG_DOMAINS):
+            continue
+        if any(b in hay for b in BAD_TITLE_WORDS):
+            continue
+        try:
+            w, h = int(r.get("width") or 0), int(r.get("height") or 0)
+        except Exception:
+            w = h = 0
+        if (w and w < 400) or (h and h < 400):
+            continue
+        matched = sum(1 for t in tokens if t in hay)
+        if matched < need:
+            continue
+        score = matched * 10 + min((w * h) / 1e6, 3.0)
+        if any(n in domain_blob for n in NEWS_DOMAINS):
+            score += 4
+        ranked.append((score, r))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in ranked]
+
+
+def _ddg_images(ddgs, query, max_results):
+    """Pehle 'photo + large' filter ke saath, na chale to simple search."""
+    try:
+        res = list(ddgs.images(query, max_results=max_results, safesearch="moderate",
+                               type_image="photo", size="Large"))
+        if res:
+            return res
+    except Exception:
+        pass
+    return list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
+
+
 MIN_IMAGE_MATCH = 3      # isse kam match wali image nahi lagti
 GOOD_IMAGE_MATCH = 6     # itni match mile to aage search nahi karte
 
@@ -397,13 +473,16 @@ def download_logo_free_images(keywords, output_folder="temp_images", article_ima
             print(f"⚠️ Rejected {url[:60]}: {e}")
             return None
 
-    def collect(ddgs, query, cands, cand_hashes, limit, max_results):
+    def collect(ddgs, query, cands, cand_hashes, limit, max_results, tokens=()):
         try:
-            results = list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
+            results = _ddg_images(ddgs, query, max_results)
         except Exception as e:          # rate limit: thoda ruk kar ek baar aur
             print(f"⚠️ Image search retry for '{query}': {str(e)[:60]}")
             time.sleep(4)
-            results = list(ddgs.images(query, max_results=max_results, safesearch="moderate"))
+            results = _ddg_images(ddgs, query, max_results)
+        total = len(results)
+        results = _rank_image_results(results, list(tokens))
+        print(f"   🔎 '{query}': {total} results -> {len(results)} sahi (naam match, stock/clipart nahi)")
         for r in results:
             if len(cands) >= limit:
                 break
@@ -458,13 +537,15 @@ def download_logo_free_images(keywords, output_folder="temp_images", article_ima
                     for qi, q in enumerate(queries):
                         if qi > 0:
                             print(f"🔍 Backup search for '{kw}': '{q}'")
-                        collect(ddgs, q, cands, cand_hashes, limit=len(cands) + 5, max_results=12)
+                        collect(ddgs, q, cands, cand_hashes,
+                                limit=len(cands) + (5 if IMAGE_AI_CHECK else 1),
+                                max_results=20, tokens=_kw_tokens(kw))
                         new = cands[start:]
                         start = len(cands)
                         if not new:
                             continue
                         res = pick_relevant_image(new, kw, scene_texts.get(kw, ""), context)
-                        if res is None:                 # Gemini check nahi ho paya: pehli valid image
+                        if res is None:                 # AI check band/fail: ranking ki sabse upar wali image
                             best, best_score = new[0], GOOD_IMAGE_MATCH
                             break
                         idx, score = res
