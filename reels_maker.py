@@ -756,23 +756,23 @@ def main():
     chunk_infos = generate_male_voice(script_text, audio_file)
 
     output_mp4 = os.path.join(OUTPUT_DIR, f"News_Reel_{time.strftime('%Y%m%d_%H%M%S')}.mp4")
-    final_video = reel_editing.build_reel(
+    reel_video = reel_editing.build_reel(
         audio_file, chunk_infos, scenes, images, kw_to_path, output_mp4,
         bg_url=(BG_SITE_URL or url), speed=VOICE_SPEED)
 
-    print("\n🎉 SUCCESS! Reel ban gaya.")
-    print(f"File: {os.path.abspath(final_video)}")
+    print("\n🎉 SUCCESS! Reel ban gayi.")
+    print(f"Reel: {os.path.abspath(reel_video)}")
 
     if not yt_title:
         yt_title = script_text[:90]
     if not yt_desc:
         yt_desc = script_text + "\n\n#Shorts #News #Hindi #BreakingNews"
 
-    video_id = upload_to_youtube(final_video, yt_title, yt_desc)
+    video_id = upload_to_youtube(reel_video, yt_title, yt_desc)
     if video_id:
         notify_telegram(f"✅ <b>Reel upload ho gaya (Unlisted)</b>\n🎬 {yt_title}\n🖼️ Images: {got}/{len(unique_kws)} scenes\n🔗 https://youtube.com/shorts/{video_id}")
     else:
-        notify_telegram(f"✅ Reel ban gaya (YouTube upload nahi hua): {os.path.basename(final_video)}\n⚠️ Wajah: {LAST_UPLOAD_ERROR[:300] or 'pata nahi'}")
+        notify_telegram(f"✅ Reel ban gaya (YouTube upload nahi hua): {os.path.basename(reel_video)}\n⚠️ Wajah: {LAST_UPLOAD_ERROR[:300] or 'pata nahi'}")
 
 
 if __name__ == "__main__":
