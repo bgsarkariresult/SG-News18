@@ -66,6 +66,19 @@ for _i, _k in enumerate(GEMINI_API_KEYS, start=1):
     except Exception as _e:
         print(f"⚠️ Gemini client {_i} nahi bana: {_e}")
 
+# Groq (Gemini KEY_1/2/3 teeno fail hone par fallback)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODELS = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
+GROQ_CLIENT = None
+if GROQ_API_KEY:
+    try:
+        from groq import Groq
+        GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
+    except Exception as _e:
+        print(f"⚠️ Groq client nahi bana: {_e}")
+else:
+    print("⚠️ GROQ_API_KEY nahi mila (Gemini fail hone par Groq fallback nahi chalega).")
+
 # Telegram (optional: wahi secrets jo SG News18 bot use karta hai)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
@@ -209,9 +222,31 @@ def generate_teen_friendly_script(article_text):
         if raw_text:
             break
 
-    # 2. Secondary Fallback: Verifiable Working g4f Providers
+    # 2. Secondary: Groq (jab Gemini KEY_1/2/3 teeno fail ho jayein)
+    if not raw_text and GROQ_CLIENT:
+        print("🔄 Gemini failed. Switching to Groq...")
+        notify_telegram("🔄 Gemini fail, ab Groq try ho raha hai...")
+        for g_model in GROQ_MODELS:
+            try:
+                print(f"🔄 Trying Groq - {g_model}...")
+                g_resp = GROQ_CLIENT.chat.completions.create(
+                    model=g_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                    max_tokens=4096,
+                    response_format={"type": "json_object"}
+                )
+                g_text = (g_resp.choices[0].message.content or "").strip()
+                if g_text and len(g_text) > 20:
+                    raw_text = g_text
+                    print(f"✅ Success using Groq - {g_model}")
+                    break
+            except Exception as e:
+                print(f"⚠️ Groq {g_model} Failed: {str(e)[:100]}...")
+
+    # 3. Last Fallback: Verifiable Working g4f Providers
     if not raw_text:
-        print("⚠️ Gemini Failed! Triggering Verified g4f Providers...")
+        print("⚠️ Gemini/Groq Failed! Triggering Verified g4f Providers...")
         import g4f
         
         working_providers = ['Pollinations', 'TeachAnything', 'DeepInfra', 'BlackboxPro', 'Custom']
