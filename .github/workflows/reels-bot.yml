@@ -22,9 +22,10 @@ jobs:
           python-version: "3.11"
 
       - name: System packages (ffmpeg + Hindi font + text shaping)
+        timeout-minutes: 10
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-noto-core libraqm0
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 ffmpeg fonts-noto-core libraqm0
 
       - name: Python packages
         run: |
