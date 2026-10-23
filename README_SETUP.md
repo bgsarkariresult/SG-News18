@@ -39,6 +39,7 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 | `GEMINI_API_KEY_1`         | पहली Gemini key                         |
 | `GEMINI_API_KEY_2`         | दूसरी Gemini key                        |
 | `GEMINI_API_KEY_3`         | तीसरी Gemini key                        |
+| `GROQ_API_KEY`             | Groq key (तीनों Gemini fail होने पर backup) |
 | `TELEGRAM_BOT_TOKEN`       | BotFather से मिला token                 |
 | `TELEGRAM_CHAT_ID`         | आपकी chat id                            |
 | `YT_CLIENT_SECRETS_B64`    | स्टेप 3 वाला base64 (client_secrets.json)|
