@@ -616,7 +616,7 @@ def record_website_video(url, output_clip_path, target_duration):
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
             page.wait_for_timeout(3000)
-            page.evaluate("document.body.style.zoom = '1.4'")
+            page.evaluate("document.body.style.zoom = '1.6'")
             page.wait_for_timeout(1000)
 
             js_code = """
@@ -822,7 +822,7 @@ def build_edited_video(audio_file, chunk_infos, ai_data, script_text, post_url, 
     reel_editing.build_reel(
         audio_file, chunk_infos, scenes, images, kw_to_path, video_file,
         bg_video=(web_clip_path if bg_ok else None), bg_skip=LAST_REC_SKIP,
-        speed=1.0, work_dir="long_work")
+        speed=1.2, work_dir="long_work")
     return os.path.exists(video_file)
 
 
