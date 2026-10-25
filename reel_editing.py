@@ -43,7 +43,7 @@ CARD_CENTER_X = W // 2
 CARD_CENTER_Y = 600
 CARD_RADIUS = 38
 CARD_BORDER = 8
-CARD_ZOOM = 0.07                       # 7% slow zoom
+CARD_ZOOM = 0.13                       # 13% slow zoom for long-video foreground images
 
 # Captions
 CAPTION_CENTER_Y = 1300
@@ -843,7 +843,7 @@ LAYOUTS = {
                      CAPTION_CENTER_Y=1300, CAPTION_FONT_SIZE=80, CAPTION_MARGIN=60,
                      CAPTION_WORDS_PER_LINE=3, CAPTION_STROKE=7),
     "wide": dict(W=1920, H=1080, FPS=25,
-                 CARD_BOX_W=880, CARD_BOX_H=500, CARD_CENTER_X=960, CARD_CENTER_Y=440,
+                 CARD_BOX_W=1020, CARD_BOX_H=570, CARD_CENTER_X=960, CARD_CENTER_Y=410,
                  CAPTION_CENTER_Y=930, CAPTION_FONT_SIZE=64, CAPTION_MARGIN=140,
                  CAPTION_WORDS_PER_LINE=4, CAPTION_STROKE=6),
 }
