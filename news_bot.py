@@ -616,7 +616,7 @@ def record_website_video(url, output_clip_path, target_duration):
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
             page.wait_for_timeout(3000)
-            page.evaluate("document.body.style.zoom = '1.6'")
+            page.evaluate("document.body.style.zoom = '1.8'")
             page.wait_for_timeout(1000)
 
             js_code = """
