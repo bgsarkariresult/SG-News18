@@ -640,9 +640,10 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
     try:
         url = "https://www.openai.fm/api/generate"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Origin": "https://www.openai.fm",
             "Referer": "https://www.openai.fm/",
+            "Accept": "*/*",
         }
         files = {
             "input": (None, text_chunk),
@@ -650,24 +651,48 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
             "prompt": (None, "Speak clearly in a natural, friendly Indian Hindi male tone. Moderate pace."),
             "vibe": (None, "audio")
         }
+
         response = requests.post(url, files=files, headers=headers, timeout=90, stream=True)
+
+        # 429 rate limit hai: ise audio success na mano aur GET se bypass karne ki koshish na karo.
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After", "not provided")
+            raise Exception(f"HTTP 429 Too Many Requests (Retry-After: {retry_after})")
+
+        # Sirf non-rate-limit errors par GET fallback try karo.
         if response.status_code != 200:
-            params = {"input": text_chunk, "voice": "fable", "prompt": "Speak clearly in natural friendly Indian Hindi male tone."}
+            response.close()
+            params = {
+                "input": text_chunk,
+                "voice": "fable",
+                "prompt": "Speak clearly in natural friendly Indian Hindi male tone."
+            }
             response = requests.get(url, params=params, headers=headers, timeout=90, stream=True)
-        
+
         response.raise_for_status()
+
+        # HTTP 200 ke saath bhi HTML/error page aa sakta hai; audio MIME type zaroor check karo.
+        content_type = response.headers.get("Content-Type", "").lower()
+        if not (content_type.startswith("audio/") or "application/octet-stream" in content_type):
+            raise Exception(f"Expected audio response, got Content-Type: {content_type or 'missing'}")
+
+        bytes_written = 0
         with open(output_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
-                    
-        if os.path.getsize(output_path) < 8000:
-            raise Exception("Audio too small")
+                    bytes_written += len(chunk)
+        response.close()
+
+        if bytes_written < 8000:
+            raise Exception(f"Audio too small / invalid ({bytes_written} bytes)")
+
+        print(f"✅ OpenAI.fm audio saved: {bytes_written} bytes")
         return True
+
     except Exception as e:
         print(f"⚠️ OpenAI.fm Error: {e}")
         return False
-
 
 def generate_edge_tts_voice(text, output_audio_path):
     voice = "hi-IN-MadhurNeural"
