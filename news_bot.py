@@ -826,10 +826,137 @@ def build_edited_video(audio_file, chunk_infos, ai_data, script_text, post_url, 
     return os.path.exists(video_file)
 
 
+
+# ==========================================
+# 6c. SG NEWS18 BRANDED THUMBNAIL GENERATOR
+# ==========================================
+from io import BytesIO
+
+def _thumbnail_font(size, bold=True):
+    candidates = [
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf" if bold else "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+
+def _article_hero_image(article_url):
+    try:
+        page = requests.get(article_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        page.raise_for_status()
+        html = page.text[:500000]
+        patterns = [
+            r"""<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)""",
+            r"""<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']""",
+            r"""<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)""",
+            r"""<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']""",
+        ]
+        image_url = ""
+        for pattern in patterns:
+            match = re.search(pattern, html, re.I)
+            if match:
+                image_url = requests.compat.urljoin(article_url, match.group(1).replace("&amp;", "&"))
+                break
+        if not image_url:
+            return None
+        response = requests.get(image_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+        response.raise_for_status()
+        image = Image.open(BytesIO(response.content)).convert("RGB")
+        return image if image.width >= 320 and image.height >= 180 else None
+    except Exception as e:
+        print(f"⚠️ Thumbnail article photo nahi mili: {e}")
+        return None
+
+
+def _draw_fixed_presenter(draw):
+    draw.polygon([(900, 720), (940, 485), (1015, 405), (1120, 405), (1205, 485), (1280, 720)], fill=(12, 17, 31))
+    draw.polygon([(1030, 405), (1080, 485), (1130, 405), (1110, 720), (1050, 720)], fill=(245, 245, 242))
+    draw.polygon([(1070, 445), (1090, 445), (1110, 620), (1080, 675), (1050, 620)], fill=(205, 28, 42))
+    draw.rectangle((1045, 345, 1115, 445), fill=(190, 125, 93))
+    draw.ellipse((1000, 205, 1160, 410), fill=(198, 139, 108), outline=(90, 48, 42), width=4)
+    draw.pieslice((995, 175, 1165, 345), 180, 360, fill=(25, 24, 27))
+    draw.rectangle((1000, 260, 1018, 310), fill=(25, 24, 27))
+    draw.rectangle((1140, 260, 1158, 310), fill=(25, 24, 27))
+    draw.line((1025, 285, 1060, 280), fill=(35, 28, 28), width=5)
+    draw.line((1100, 280, 1135, 285), fill=(35, 28, 28), width=5)
+    draw.rectangle((1020, 292, 1070, 322), outline=(35, 40, 48), width=4)
+    draw.rectangle((1090, 292, 1140, 322), outline=(35, 40, 48), width=4)
+    draw.line((1070, 306, 1090, 306), fill=(35, 40, 48), width=4)
+    draw.line((1080, 315, 1072, 350, 1088, 352), fill=(125, 75, 60), width=3)
+    draw.arc((1050, 345, 1110, 380), 10, 170, fill=(105, 42, 43), width=4)
+    draw.polygon([(1015, 420), (1060, 500), (1035, 555), (985, 455)], fill=(26, 34, 52))
+    draw.polygon([(1130, 420), (1095, 500), (1120, 555), (1170, 455)], fill=(26, 34, 52))
+
+
+def create_news_thumbnail(title, article_url, output_path):
+    """Create a branded 1280x720 SG News18 thumbnail."""
+    W, H = 1280, 720
+    canvas = Image.new("RGB", (W, H), (30, 3, 12))
+    draw = ImageDraw.Draw(canvas)
+    for y in range(H):
+        shade = int(34 + 28 * (y / H))
+        draw.line((0, y, W, y), fill=(shade, 2, 16))
+    draw.rectangle((0, 0, W, 190), fill=(44, 0, 15), outline=(235, 190, 35), width=3)
+
+    photo = _article_hero_image(article_url)
+    if photo:
+        target_w, target_h = 900, 445
+        scale = max(target_w / photo.width, target_h / photo.height)
+        photo = photo.resize((int(photo.width * scale), int(photo.height * scale)), Image.Resampling.LANCZOS)
+        left, top = (photo.width - target_w) // 2, (photo.height - target_h) // 2
+        canvas.paste(photo.crop((left, top, left + target_w, top + target_h)), (0, 190))
+    else:
+        draw.rectangle((0, 190, 900, 635), fill=(35, 65, 38))
+        draw.text((70, 380), "SG NEWS18", font=_thumbnail_font(56), fill=(255, 255, 255))
+
+    draw.rectangle((900, 145, 1279, 720), fill=(48, 2, 18))
+    _draw_fixed_presenter(draw)
+
+    clean = " ".join(str(title or "बड़ी खबर").split()).strip()
+    if len(clean) > 58:
+        clean = clean[:57].rsplit(" ", 1)[0] + "…"
+    words, lines, current = clean.split(), [], ""
+    for word in words:
+        candidate = (current + " " + word).strip()
+        if len(candidate) > 27 and current:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    lines = lines[:2]
+    headline_font = _thumbnail_font(60, bold=True)
+    y = 25 if len(lines) == 2 else 55
+    for index, line in enumerate(lines):
+        color = (255, 205, 0) if index == len(lines) - 1 else (255, 255, 255)
+        try:
+            draw.text((34, y), line, font=headline_font, fill=color, stroke_width=2, stroke_fill=(20, 0, 0), direction="ltr")
+        except TypeError:
+            draw.text((34, y), line, font=headline_font, fill=color, stroke_width=2, stroke_fill=(20, 0, 0))
+        y += 72
+
+    draw.rounded_rectangle((1015, 18, 1255, 112), radius=10, fill=(12, 29, 54), outline=(255, 255, 255), width=3)
+    draw.text((1034, 22), "SG", font=_thumbnail_font(42), fill=(255, 255, 255))
+    draw.text((1030, 66), "NEWS18", font=_thumbnail_font(31), fill=(255, 255, 255))
+    draw.rectangle((0, 635, 1280, 720), fill=(115, 0, 18))
+    draw.rectangle((0, 635, 310, 720), fill=(225, 12, 25))
+    draw.text((25, 647), "BREAKING", font=_thumbnail_font(43), fill=(255, 255, 255))
+    draw.text((335, 650), "ताज़ा खबर  |  SG NEWS18", font=_thumbnail_font(38), fill=(255, 220, 0))
+    canvas.save(output_path, "JPEG", quality=92, optimize=True)
+    print(f"✅ SG News18 thumbnail ready: {output_path}")
+    return output_path
+
 # ==========================================
 # 7. YouTube Auto Uploader
 # ==========================================
-def upload_to_youtube(video_path, title, description, tags):
+def upload_to_youtube(video_path, title, description, tags, thumbnail_path=None):
     print("📤 Uploading Video to YouTube as UNLISTED...")
     youtube = get_youtube_service()
     if not youtube:
@@ -867,6 +994,17 @@ def upload_to_youtube(video_path, title, description, tags):
         video_id = response.get('id')
         video_url = f"https://youtu.be/{video_id}"
         print(f"✅ Video Uploaded Successfully! Video URL: {video_url}")
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            try:
+                youtube.thumbnails().set(
+                    videoId=video_id,
+                    media_body=MediaFileUpload(thumbnail_path, mimetype="image/jpeg")
+                ).execute()
+                print("✅ Custom SG News18 thumbnail YouTube par set ho gaya!")
+                notify_telegram("🖼️ SG News18 ka custom thumbnail YouTube par set ho gaya.")
+            except Exception as thumb_error:
+                print(f"⚠️ Thumbnail upload fail (video upload safe hai): {thumb_error}")
+                notify_telegram(f"⚠️ Video upload ho gaya, lekin thumbnail set nahi hua.\n<code>{str(thumb_error)[:250]}</code>")
         notify_telegram(f"✅ <b>Video ban kar YouTube pe upload ho gaya!</b>\n🎬 {title}\n🔗 {video_url}")
 
     except Exception as e:
@@ -957,7 +1095,13 @@ def main():
                             pass
 
                     if video_created and os.path.exists(video_file):
-                        upload_to_youtube(video_file, selected_title, seo_desc, tags)
+                        thumbnail_file = os.path.join(output_dir, f"{filename_base}_thumbnail.jpg")
+                        try:
+                            create_news_thumbnail(selected_title, post_url, thumbnail_file)
+                        except Exception as thumb_error:
+                            print(f"⚠️ Thumbnail generation fail; video upload continue: {thumb_error}")
+                            thumbnail_file = None
+                        upload_to_youtube(video_file, selected_title, seo_desc, tags, thumbnail_path=thumbnail_file)
                     else:
                         notify_telegram("❌ Video build fail ho gaya, YouTube upload skip.")
 
