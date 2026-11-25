@@ -828,14 +828,23 @@ def build_edited_video(audio_file, chunk_infos, ai_data, script_text, post_url, 
 
 
 # ==========================================
+# ==========================================
 # 6c. SG NEWS18 BRANDED THUMBNAIL GENERATOR
 # ==========================================
 from io import BytesIO
 
-def _thumbnail_font(size, bold=True):
+
+def _thumbnail_font(size, bold=True, hindi=False):
+    """Use the same tested Noto/RAQM font loader as the video caption engine."""
+    if hindi:
+        try:
+            return reel_editing._load_font(size, script="hindi")
+        except Exception as e:
+            print(f"⚠️ Hindi RAQM font loader unavailable: {e}")
+    # Latin-only fallback for English branding.
     candidates = [
-        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf" if bold else "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     ]
     for path in candidates:
         if os.path.exists(path):
@@ -846,114 +855,223 @@ def _thumbnail_font(size, bold=True):
     return ImageFont.load_default()
 
 
-def _article_hero_image(article_url):
+def _download_thumbnail_image(url):
+    if not url:
+        return None
     try:
-        page = requests.get(article_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
-        page.raise_for_status()
-        html = page.text[:500000]
-        patterns = [
-            r"""<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)""",
-            r"""<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']""",
-            r"""<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)""",
-            r"""<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']""",
-        ]
-        image_url = ""
-        for pattern in patterns:
-            match = re.search(pattern, html, re.I)
-            if match:
-                image_url = requests.compat.urljoin(article_url, match.group(1).replace("&amp;", "&"))
-                break
-        if not image_url:
-            return None
-        response = requests.get(image_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+        response = requests.get(
+            url, headers={"User-Agent": "Mozilla/5.0"}, timeout=25
+        )
         response.raise_for_status()
         image = Image.open(BytesIO(response.content)).convert("RGB")
-        return image if image.width >= 320 and image.height >= 180 else None
+        if image.width < 320 or image.height < 180:
+            print(f"⚠️ Thumbnail image too small: {image.size}")
+            return None
+        print(f"✅ Article image downloaded: {image.size}")
+        return image
     except Exception as e:
-        print(f"⚠️ Thumbnail article photo nahi mili: {e}")
+        print(f"⚠️ Could not download article image: {e}")
         return None
 
 
-def _draw_fixed_presenter(draw):
-    draw.polygon([(900, 720), (940, 485), (1015, 405), (1120, 405), (1205, 485), (1280, 720)], fill=(12, 17, 31))
-    draw.polygon([(1030, 405), (1080, 485), (1130, 405), (1110, 720), (1050, 720)], fill=(245, 245, 242))
-    draw.polygon([(1070, 445), (1090, 445), (1110, 620), (1080, 675), (1050, 620)], fill=(205, 28, 42))
-    draw.rectangle((1045, 345, 1115, 445), fill=(190, 125, 93))
-    draw.ellipse((1000, 205, 1160, 410), fill=(198, 139, 108), outline=(90, 48, 42), width=4)
-    draw.pieslice((995, 175, 1165, 345), 180, 360, fill=(25, 24, 27))
-    draw.rectangle((1000, 260, 1018, 310), fill=(25, 24, 27))
-    draw.rectangle((1140, 260, 1158, 310), fill=(25, 24, 27))
-    draw.line((1025, 285, 1060, 280), fill=(35, 28, 28), width=5)
-    draw.line((1100, 280, 1135, 285), fill=(35, 28, 28), width=5)
-    draw.rectangle((1020, 292, 1070, 322), outline=(35, 40, 48), width=4)
-    draw.rectangle((1090, 292, 1140, 322), outline=(35, 40, 48), width=4)
-    draw.line((1070, 306, 1090, 306), fill=(35, 40, 48), width=4)
-    draw.line((1080, 315, 1072, 350, 1088, 352), fill=(125, 75, 60), width=3)
-    draw.arc((1050, 345, 1110, 380), 10, 170, fill=(105, 42, 43), width=4)
-    draw.polygon([(1015, 420), (1060, 500), (1035, 555), (985, 455)], fill=(26, 34, 52))
-    draw.polygon([(1130, 420), (1095, 500), (1120, 555), (1170, 455)], fill=(26, 34, 52))
+def _article_hero_image(article_url, video_path=None):
+    """Prefer the same SG News JSON scraper used by the reels image pipeline."""
+    image_url = None
+    try:
+        import reels_maker as RM
+        _, image_url = RM.scrape_article_text(article_url)
+        if image_url:
+            print("🖼️ Article image URL reels_maker scraper se mili.")
+    except Exception as e:
+        print(f"⚠️ SG article scraper image lookup failed: {e}")
 
-
-def create_news_thumbnail(title, article_url, output_path):
-    """Create a branded 1280x720 SG News18 thumbnail."""
-    W, H = 1280, 720
-    canvas = Image.new("RGB", (W, H), (30, 3, 12))
-    draw = ImageDraw.Draw(canvas)
-    for y in range(H):
-        shade = int(34 + 28 * (y / H))
-        draw.line((0, y, W, y), fill=(shade, 2, 16))
-    draw.rectangle((0, 0, W, 190), fill=(44, 0, 15), outline=(235, 190, 35), width=3)
-
-    photo = _article_hero_image(article_url)
+    photo = _download_thumbnail_image(image_url)
     if photo:
-        target_w, target_h = 900, 445
-        scale = max(target_w / photo.width, target_h / photo.height)
-        photo = photo.resize((int(photo.width * scale), int(photo.height * scale)), Image.Resampling.LANCZOS)
-        left, top = (photo.width - target_w) // 2, (photo.height - target_h) // 2
-        canvas.paste(photo.crop((left, top, left + target_w, top + target_h)), (0, 190))
-    else:
-        draw.rectangle((0, 190, 900, 635), fill=(35, 65, 38))
-        draw.text((70, 380), "SG NEWS18", font=_thumbnail_font(56), fill=(255, 255, 255))
+        return photo
 
-    draw.rectangle((900, 145, 1279, 720), fill=(48, 2, 18))
-    _draw_fixed_presenter(draw)
+    # Generic article metadata fallback (OG image / Twitter image / first large article image).
+    try:
+        page = requests.get(
+            article_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20
+        )
+        page.raise_for_status()
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(page.content, "html.parser")
+        for key, attr in [
+            ("property", "og:image"),
+            ("name", "twitter:image"),
+            ("property", "twitter:image"),
+        ]:
+            tag = soup.find("meta", attrs={key: attr})
+            if tag and tag.get("content"):
+                photo = _download_thumbnail_image(
+                    requests.compat.urljoin(article_url, tag["content"])
+                )
+                if photo:
+                    return photo
+        for tag in soup.find_all("img"):
+            src = tag.get("src") or tag.get("data-src") or tag.get("data-lazy-src")
+            if src:
+                photo = _download_thumbnail_image(requests.compat.urljoin(article_url, src))
+                if photo:
+                    return photo
+    except Exception as e:
+        print(f"⚠️ HTML image fallback failed: {e}")
 
-    clean = " ".join(str(title or "बड़ी खबर").split()).strip()
-    if len(clean) > 58:
-        clean = clean[:57].rsplit(" ", 1)[0] + "…"
-    words, lines, current = clean.split(), [], ""
+    # Last reliable fallback: take a real frame from the generated news video.
+    if video_path and os.path.exists(video_path):
+        frame_path = "thumbnail_video_frame.jpg"
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-ss", "3", "-i", video_path,
+                 "-frames:v", "1", "-q:v", "2", frame_path],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=30
+            )
+            photo = _download_thumbnail_image(
+                "file://" + os.path.abspath(frame_path)
+            )
+        except Exception:
+            try:
+                if os.path.exists(frame_path):
+                    photo = Image.open(frame_path).convert("RGB")
+                    if photo.width >= 320 and photo.height >= 180:
+                        return photo
+            except Exception:
+                pass
+    return photo
+
+
+def _fit_crop(image, size):
+    target_w, target_h = size
+    scale = max(target_w / image.width, target_h / image.height)
+    image = image.resize(
+        (int(image.width * scale), int(image.height * scale)),
+        Image.Resampling.LANCZOS
+    )
+    left = (image.width - target_w) // 2
+    top = (image.height - target_h) // 2
+    return image.crop((left, top, left + target_w, top + target_h))
+
+
+def _wrap_hindi_headline(text, font, max_width, max_lines=2):
+    words = " ".join(str(text or "बड़ी खबर").split()).split()
+    lines, current = [], ""
     for word in words:
-        candidate = (current + " " + word).strip()
-        if len(candidate) > 27 and current:
+        trial = (current + " " + word).strip()
+        if current and font.getlength(trial) > max_width:
             lines.append(current)
             current = word
         else:
-            current = candidate
+            current = trial
     if current:
         lines.append(current)
-    lines = lines[:2]
-    headline_font = _thumbnail_font(60, bold=True)
-    y = 25 if len(lines) == 2 else 55
-    for index, line in enumerate(lines):
-        color = (255, 205, 0) if index == len(lines) - 1 else (255, 255, 255)
-        try:
-            draw.text((34, y), line, font=headline_font, fill=color, stroke_width=2, stroke_fill=(20, 0, 0), direction="ltr")
-        except TypeError:
-            draw.text((34, y), line, font=headline_font, fill=color, stroke_width=2, stroke_fill=(20, 0, 0))
-        y += 72
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        last = lines[-1]
+        while last and font.getlength(last + "…") > max_width:
+            last = last.rsplit(" ", 1)[0] if " " in last else last[:-1]
+        lines[-1] = last.rstrip() + "…"
+    return lines
 
-    draw.rounded_rectangle((1015, 18, 1255, 112), radius=10, fill=(12, 29, 54), outline=(255, 255, 255), width=3)
-    draw.text((1034, 22), "SG", font=_thumbnail_font(42), fill=(255, 255, 255))
-    draw.text((1030, 66), "NEWS18", font=_thumbnail_font(31), fill=(255, 255, 255))
-    draw.rectangle((0, 635, 1280, 720), fill=(115, 0, 18))
-    draw.rectangle((0, 635, 310, 720), fill=(225, 12, 25))
-    draw.text((25, 647), "BREAKING", font=_thumbnail_font(43), fill=(255, 255, 255))
-    draw.text((335, 650), "ताज़ा खबर  |  SG NEWS18", font=_thumbnail_font(38), fill=(255, 220, 0))
-    canvas.save(output_path, "JPEG", quality=92, optimize=True)
+
+def _load_presenter_cutout():
+    """Optional real transparent presenter image; never draw a cartoon placeholder."""
+    local_path = os.getenv("SG_NEWS18_PRESENTER_FILE", "assets/sg-news18-presenter.png")
+    if os.path.exists(local_path):
+        try:
+            return Image.open(local_path).convert("RGBA")
+        except Exception as e:
+            print(f"⚠️ Presenter PNG open failed: {e}")
+    presenter_url = os.getenv("SG_NEWS18_PRESENTER_URL", "").strip()
+    if presenter_url:
+        try:
+            response = requests.get(
+                presenter_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20
+            )
+            response.raise_for_status()
+            return Image.open(BytesIO(response.content)).convert("RGBA")
+        except Exception as e:
+            print(f"⚠️ Presenter URL download failed: {e}")
+    return None
+
+
+def create_news_thumbnail(title, article_url, output_path, video_path=None):
+    """Create a clean 1280x720 SG News18 thumbnail with correctly shaped Hindi text."""
+    W, H = 1280, 720
+    canvas = Image.new("RGB", (W, H), (35, 0, 13))
+    draw = ImageDraw.Draw(canvas)
+
+    # Deep maroon background and headline band.
+    for y in range(H):
+        shade = int(35 + 22 * (y / H))
+        draw.line((0, y, W, y), fill=(shade, 1, 17))
+    draw.rectangle((0, 0, W - 1, 190), fill=(43, 0, 15), outline=(238, 190, 40), width=3)
+
+    # Real news photo: article JSON image -> OG image -> article image -> video frame.
+    photo = _article_hero_image(article_url, video_path=video_path)
+    photo_area = (0, 190, 900, 650)
+    if photo:
+        canvas.paste(_fit_crop(photo, (900, 460)), (0, 190))
+    else:
+        # Never show the old empty green block.
+        fallback = Image.new("RGB", (900, 460), (48, 8, 22))
+        fd = ImageDraw.Draw(fallback)
+        fd.rectangle((12, 12, 888, 448), outline=(210, 165, 45), width=3)
+        latin = _thumbnail_font(54, bold=True)
+        fd.text((235, 190), "SG NEWS18", font=latin, fill=(255, 255, 255))
+        canvas.paste(fallback, (0, 190))
+        print("⚠️ No article/video photo found; branded fallback used instead of green panel.")
+
+    # Presenter panel: real user-supplied PNG only; no cartoon avatar.
+    draw.rectangle((900, 145, 1279, 650), fill=(48, 1, 18))
+    presenter = _load_presenter_cutout()
+    if presenter:
+        max_w, max_h = 370, 500
+        scale = min(max_w / presenter.width, max_h / presenter.height)
+        presenter = presenter.resize(
+            (int(presenter.width * scale), int(presenter.height * scale)),
+            Image.Resampling.LANCZOS
+        )
+        if presenter.mode == "RGBA":
+            canvas.paste(presenter, (900 + (380 - presenter.width) // 2,
+                                     650 - presenter.height), presenter)
+        else:
+            canvas.paste(presenter, (900 + (380 - presenter.width) // 2,
+                                     650 - presenter.height))
+    else:
+        # Clean branded panel until the channel's real presenter cutout is supplied.
+        brand_font = _thumbnail_font(42, bold=True)
+        brand_small = _thumbnail_font(27, bold=True)
+        draw.rounded_rectangle((935, 245, 1245, 445), radius=18,
+                               fill=(12, 29, 54), outline=(245, 245, 245), width=4)
+        draw.text((985, 285), "SG NEWS18", font=brand_font, fill=(255, 255, 255))
+        draw.text((980, 350), "NEWS UPDATE", font=brand_small, fill=(255, 210, 0))
+
+    # Headline uses RAQM-enabled Noto Devanagari font from reel_editing.
+    headline_font = _thumbnail_font(58, bold=True, hindi=True)
+    lines = _wrap_hindi_headline(title, headline_font, 835, max_lines=2)
+    if len(lines) == 1:
+        y_positions = [52]
+    else:
+        y_positions = [20, 94]
+    for i, line in enumerate(lines):
+        color = (255, 205, 0) if i == len(lines) - 1 else (255, 255, 255)
+        draw.text(
+            (30, y_positions[i]), line, font=headline_font, fill=color,
+            stroke_width=2, stroke_fill=(15, 0, 0)
+        )
+
+    # Bottom channel ticker.
+    draw.rectangle((0, 650, 1280, 719), fill=(112, 0, 20))
+    draw.rectangle((0, 650, 310, 719), fill=(220, 10, 25))
+    english_bold = _thumbnail_font(39, bold=True)
+    draw.text((24, 663), "BREAKING", font=english_bold, fill=(255, 255, 255))
+    draw.text((335, 662), "SG NEWS18", font=english_bold, fill=(255, 218, 0))
+
+    canvas.save(output_path, "JPEG", quality=94, optimize=True)
     print(f"✅ SG News18 thumbnail ready: {output_path}")
     return output_path
 
-# ==========================================
 # 7. YouTube Auto Uploader
 # ==========================================
 def upload_to_youtube(video_path, title, description, tags, thumbnail_path=None):
@@ -1097,7 +1215,7 @@ def main():
                     if video_created and os.path.exists(video_file):
                         thumbnail_file = os.path.join(output_dir, f"{filename_base}_thumbnail.jpg")
                         try:
-                            create_news_thumbnail(selected_title, post_url, thumbnail_file)
+                            create_news_thumbnail(selected_title, post_url, thumbnail_file, video_path=video_file)
                         except Exception as thumb_error:
                             print(f"⚠️ Thumbnail generation fail; video upload continue: {thumb_error}")
                             thumbnail_file = None
