@@ -837,11 +837,12 @@ from io import BytesIO
 def _thumbnail_font(size, bold=True, hindi=False):
     """Use the same tested Noto/RAQM font loader as the video caption engine."""
     if hindi:
+        # Never silently fall back to a Latin font: that creates □□□ Hindi thumbnails.
         try:
             return reel_editing._load_font(size, script="hindi")
         except Exception as e:
-            print(f"⚠️ Hindi RAQM font loader unavailable: {e}")
-    # Latin-only fallback for English branding.
+            raise RuntimeError(f"Devanagari font/RAQM unavailable; refusing broken thumbnail: {e}")
+    # Latin-only font is used only for English channel branding.
     candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
@@ -927,17 +928,13 @@ def _article_hero_image(article_url, video_path=None):
                  "-frames:v", "1", "-q:v", "2", frame_path],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=30
             )
-            photo = _download_thumbnail_image(
-                "file://" + os.path.abspath(frame_path)
-            )
-        except Exception:
-            try:
-                if os.path.exists(frame_path):
-                    photo = Image.open(frame_path).convert("RGB")
-                    if photo.width >= 320 and photo.height >= 180:
-                        return photo
-            except Exception:
-                pass
+            if os.path.exists(frame_path):
+                photo = Image.open(frame_path).convert("RGB")
+                if photo.width >= 320 and photo.height >= 180:
+                    print(f"✅ Video frame thumbnail fallback ready: {photo.size}")
+                    return photo
+        except Exception as e:
+            print(f"⚠️ Could not extract a video frame for thumbnail: {e}")
     return photo
 
 
