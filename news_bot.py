@@ -843,7 +843,10 @@ def _thumbnail_font(size, bold=True, hindi=False):
         except Exception as e:
             raise RuntimeError(f"Devanagari font/RAQM unavailable; refusing broken thumbnail: {e}")
     # Latin-only font is used only for English channel branding.
+    # Poppins is used for Latin/English labels. It does not contain Devanagari glyphs.
+    poppins_path = "fonts/Poppins-Bold.ttf" if bold else "fonts/Poppins-Regular.ttf"
     candidates = [
+        poppins_path,
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
     ]
@@ -976,7 +979,12 @@ def _load_presenter_cutout():
     local_path = os.getenv("SG_NEWS18_PRESENTER_FILE", "assets/sg-news18-presenter.png")
     if os.path.exists(local_path):
         try:
-            return Image.open(local_path).convert("RGBA")
+            presenter = Image.open(local_path).convert("RGBA")
+            # Trim transparent padding so the actual anchor appears much larger.
+            bbox = presenter.getchannel("A").getbbox()
+            if bbox:
+                presenter = presenter.crop(bbox)
+            return presenter
         except Exception as e:
             print(f"⚠️ Presenter PNG open failed: {e}")
     presenter_url = os.getenv("SG_NEWS18_PRESENTER_URL", "").strip()
@@ -1023,7 +1031,7 @@ def create_news_thumbnail(title, article_url, output_path, video_path=None):
     draw.rectangle((900, 145, 1279, 650), fill=(48, 1, 18))
     presenter = _load_presenter_cutout()
     if presenter:
-        max_w, max_h = 370, 500
+        max_w, max_h = 390, 540
         scale = min(max_w / presenter.width, max_h / presenter.height)
         presenter = presenter.resize(
             (int(presenter.width * scale), int(presenter.height * scale)),
