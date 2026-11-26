@@ -636,130 +636,101 @@ def split_script_into_chunks(text, max_chars=400):
     return chunks
 
 
-def generate_fable_voice_openai_fm(text_chunk, output_path):
-    try:
-        url = "https://www.openai.fm/api/generate"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Origin": "https://www.openai.fm",
-            "Referer": "https://www.openai.fm/",
-            "Accept": "*/*",
-        }
-        files = {
-            "input": (None, text_chunk),
-            "voice": (None, "fable"),
-            "prompt": (None, "Speak clearly in a natural, friendly Indian Hindi male tone. Moderate pace."),
-            "vibe": (None, "audio")
-        }
-
-        response = requests.post(url, files=files, headers=headers, timeout=90, stream=True)
-
-        # 429 rate limit hai: ise audio success na mano aur GET se bypass karne ki koshish na karo.
-        if response.status_code == 429:
-            retry_after = response.headers.get("Retry-After", "not provided")
-            raise Exception(f"HTTP 429 Too Many Requests (Retry-After: {retry_after})")
-
-        # Sirf non-rate-limit errors par GET fallback try karo.
-        if response.status_code != 200:
-            response.close()
-            params = {
-                "input": text_chunk,
-                "voice": "fable",
-                "prompt": "Speak clearly in natural friendly Indian Hindi male tone."
-            }
-            response = requests.get(url, params=params, headers=headers, timeout=90, stream=True)
-
-        response.raise_for_status()
-
-        # HTTP 200 ke saath bhi HTML/error page aa sakta hai; audio MIME type zaroor check karo.
-        content_type = response.headers.get("Content-Type", "").lower()
-        if not (content_type.startswith("audio/") or "application/octet-stream" in content_type):
-            raise Exception(f"Expected audio response, got Content-Type: {content_type or 'missing'}")
-
-        bytes_written = 0
-        with open(output_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    bytes_written += len(chunk)
-        response.close()
-
-        if bytes_written < 8000:
-            raise Exception(f"Audio too small / invalid ({bytes_written} bytes)")
-
-        print(f"✅ OpenAI.fm audio saved: {bytes_written} bytes")
-        return True
-
-    except Exception as e:
-        print(f"⚠️ OpenAI.fm Error: {e}")
-        return False
-
 def generate_edge_tts_voice(text, output_audio_path):
-    voice = "hi-IN-MadhurNeural"
+    """Generate a Hindi male voice MP3 with Microsoft Edge TTS."""
+    import edge_tts
+
     async def _save():
-        import edge_tts
-        communicate = edge_tts.Communicate(text, voice, rate="+0%")
+        communicate = edge_tts.Communicate(
+            text,
+            voice="hi-IN-MadhurNeural",
+            rate="+0%",
+            volume="+0%",
+            pitch="+0Hz"
+        )
         await communicate.save(output_audio_path)
-        
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(_save())
-    loop.close()
+
+    # Remove stale/partial audio before generating a fresh file.
+    if os.path.exists(output_audio_path):
+        os.remove(output_audio_path)
+
+    asyncio.run(_save())
+
+    if not os.path.exists(output_audio_path) or os.path.getsize(output_audio_path) < 1000:
+        raise RuntimeError("Edge TTS returned an empty or invalid audio file.")
+
+    print(f"✅ Hindi voice generated: {os.path.getsize(output_audio_path)} bytes")
+    return True
 
 
 def generate_male_voice(text, output_audio_path):
-    print("🎙️ Generating Hindi Voiceover...")
+    print("🎙️ Generating Hindi Voiceover with Edge TTS...")
     temp_dir = "temp_voice"
     os.makedirs(temp_dir, exist_ok=True)
-    
+
     chunks = split_script_into_chunks(text, max_chars=MAX_CHUNK_CHARACTERS)
+    if not chunks:
+        raise RuntimeError("Voiceover script is empty; no audio can be generated.")
+
     audio_parts = []
     chunk_texts = []
-    fable_failed = False
-    
+
+    # Clear stale chunk files so an earlier run cannot be mixed into this reel.
+    for name in os.listdir(temp_dir):
+        if name.startswith("part_") and name.endswith(".mp3"):
+            try:
+                os.remove(os.path.join(temp_dir, name))
+            except OSError:
+                pass
+
     for idx, chunk in enumerate(chunks, start=1):
         part_filename = os.path.join(temp_dir, f"part_{idx:03d}.mp3")
-        success = False
-        
-        if not fable_failed:
-            for attempt in range(1, MAX_RETRIES + 1):
-                print(f"🎙️ Part {idx}/{len(chunks)} - OpenAI.fm Attempt {attempt}...")
-                if generate_fable_voice_openai_fm(chunk, part_filename):
-                    if os.path.getsize(part_filename) >= 8000:
-                        success = True
-                        break
-                time.sleep(2)
-            if not success:
-                fable_failed = True
-        
-        if fable_failed or not success:
-            print(f"🔊 Part {idx}/{len(chunks)} - Edge TTS Fallback...")
-            generate_edge_tts_voice(chunk, part_filename)
-            
+        last_error = None
+
+        for attempt in range(1, 4):
+            try:
+                print(f"🔊 Part {idx}/{len(chunks)} - Hindi TTS attempt {attempt}/3...")
+                generate_edge_tts_voice(chunk, part_filename)
+                if os.path.getsize(part_filename) >= 1000:
+                    last_error = None
+                    break
+                raise RuntimeError("Generated audio file is too small.")
+            except Exception as exc:
+                last_error = exc
+                print(f"⚠️ Hindi TTS attempt {attempt} failed: {exc}")
+                if os.path.exists(part_filename):
+                    os.remove(part_filename)
+                if attempt < 3:
+                    time.sleep(2 * attempt)
+
+        if last_error is not None:
+            raise RuntimeError(f"Hindi voice generation failed for part {idx}/{len(chunks)}: {last_error}")
+
         audio_parts.append(part_filename)
         chunk_texts.append(chunk)
-    
-    if audio_parts:
-        list_file = os.path.join(temp_dir, "concat_list.txt")
-        with open(list_file, "w", encoding="utf-8") as f:
-            for p in audio_parts:
-                clean_p = os.path.abspath(p).replace('\\', '/')
-                f.write(f"file '{clean_p}'\n")
-        
-        ffmpeg_exe = os.path.join(FFMPEG_PATH, "ffmpeg.exe") if os.path.exists(os.path.join(FFMPEG_PATH, "ffmpeg.exe")) else "ffmpeg"
-        
-        cmd = [
-            ffmpeg_exe, '-f', 'concat', '-safe', '0', '-i', list_file,
-            '-af', 'loudnorm=I=-16:LRA=11:TP=-1.5',
-            '-ar', '44100', '-ac', '2', '-b:a', '128k',
-            '-c:a', 'libmp3lame', '-write_xing', '0',
-            '-y', output_audio_path
-        ]
-        subprocess.run(cmd, capture_output=True, check=True)
-        print(f"🔊 Audio Merged: {output_audio_path}")
-        # captions/scene timing ke liye har chunk ki asli length
-        return reel_editing.measure_chunks(chunk_texts, audio_parts)
-    return []
+
+    list_file = os.path.join(temp_dir, "concat_list.txt")
+    with open(list_file, "w", encoding="utf-8") as f:
+        for part in audio_parts:
+            clean_path = os.path.abspath(part).replace("\\", "/").replace("'", "'\\''")
+            f.write(f"file '{clean_path}'\n")
+
+    ffmpeg_exe = os.path.join(FFMPEG_PATH, "ffmpeg.exe") if os.path.exists(os.path.join(FFMPEG_PATH, "ffmpeg.exe")) else "ffmpeg"
+    cmd = [
+        ffmpeg_exe, "-f", "concat", "-safe", "0", "-i", list_file,
+        "-af", "loudnorm=I=-16:LRA=11:TP=-1.5",
+        "-ar", "44100", "-ac", "2", "-b:a", "128k",
+        "-c:a", "libmp3lame", "-y", output_audio_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg audio merge failed: {result.stderr[-1500:]}")
+
+    if not os.path.exists(output_audio_path) or os.path.getsize(output_audio_path) < 8000:
+        raise RuntimeError("Final merged voiceover is missing or invalid.")
+
+    print(f"🔊 Hindi voice merged successfully: {output_audio_path} ({os.path.getsize(output_audio_path)} bytes)")
+    return reel_editing.measure_chunks(chunk_texts, audio_parts)
 
 
 # ==========================================
