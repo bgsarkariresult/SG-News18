@@ -837,11 +837,20 @@ from io import BytesIO
 def _thumbnail_font(size, bold=True, hindi=False):
     """Use the same tested Noto/RAQM font loader as the video caption engine."""
     if hindi:
-        # Never silently fall back to a Latin font: that creates □□□ Hindi thumbnails.
-        try:
-            return reel_editing._load_font(size, script="hindi")
-        except Exception as e:
-            raise RuntimeError(f"Devanagari font/RAQM unavailable; refusing broken thumbnail: {e}")
+        # Thumbnail must use a dedicated Devanagari font. Do NOT use CAPTION_FONT:
+        # that environment variable may point to Poppins/another Latin-only font.
+        from PIL import features
+        candidates = [
+            "fonts/NotoSansDevanagari-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansDevanagariUI-Bold.ttf",
+        ]
+        font_path = next((p for p in candidates if os.path.exists(p)), None)
+        if not font_path:
+            raise RuntimeError("Noto Sans Devanagari Bold font file is missing.")
+        if not features.check("raqm"):
+            raise RuntimeError("Pillow RAQM support is missing; Hindi shaping cannot be rendered safely.")
+        return ImageFont.truetype(font_path, size, layout_engine=ImageFont.Layout.RAQM)
     # Latin-only font is used only for English channel branding.
     # Poppins is used for Latin/English labels. It does not contain Devanagari glyphs.
     poppins_path = "fonts/Poppins-Bold.ttf" if bold else "fonts/Poppins-Regular.ttf"
@@ -1053,8 +1062,17 @@ def create_news_thumbnail(title, article_url, output_path, video_path=None):
         draw.text((980, 350), "NEWS UPDATE", font=brand_small, fill=(255, 210, 0))
 
     # Headline uses RAQM-enabled Noto Devanagari font from reel_editing.
+    # Strip emoji/unsupported decorative symbols from AI headlines; keep Hindi,
+    # Latin, digits, punctuation and the rupee sign so tofu squares cannot appear.
+    import unicodedata
+    clean_title = " ".join(str(title or "बड़ी खबर").split())
+    clean_title = "".join(
+        ch for ch in clean_title
+        if ch == "₹" or ch.isspace()
+        or unicodedata.category(ch)[0] in ("L", "M", "N", "P")
+    )
     headline_font = _thumbnail_font(58, bold=True, hindi=True)
-    lines = _wrap_hindi_headline(title, headline_font, 835, max_lines=2)
+    lines = _wrap_hindi_headline(clean_title, headline_font, 835, max_lines=2)
     if len(lines) == 1:
         y_positions = [52]
     else:
