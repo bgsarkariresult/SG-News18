@@ -69,6 +69,12 @@ jobs:
       - name: System deps (ffmpeg)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-core libraqm0 libharfbuzz0b libfribidi0
 
+      - name: Download Poppins fonts
+        run: |
+          mkdir -p fonts
+          curl -L --fail --retry 3 "https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/Poppins-Bold.ttf" -o fonts/Poppins-Bold.ttf
+          curl -L --fail --retry 3 "https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/Poppins-Regular.ttf" -o fonts/Poppins-Regular.ttf
+
       - name: Python deps install
         run: |
           pip install -r requirements.txt
