@@ -69,6 +69,17 @@ jobs:
       - name: System deps (ffmpeg)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-core libraqm0 libharfbuzz0b libfribidi0
 
+      - name: Prepare dedicated Hindi font
+        run: |
+          mkdir -p fonts
+          FONT_FILE="$(find /usr/share/fonts -type f -iname 'NotoSansDevanagari-Bold.ttf' | head -n 1)"
+          if [ -z "$FONT_FILE" ]; then
+            echo "Noto Sans Devanagari Bold font not found after fonts-noto-core install"
+            exit 1
+          fi
+          cp "$FONT_FILE" fonts/NotoSansDevanagari-Bold.ttf
+          ls -lh fonts/NotoSansDevanagari-Bold.ttf
+
       - name: Download Poppins fonts
         run: |
           mkdir -p fonts
