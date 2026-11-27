@@ -1011,6 +1011,21 @@ def _load_presenter_cutout():
 
 def create_news_thumbnail(title, article_url, output_path, video_path=None):
     """Create a clean 1280x720 SG News18 thumbnail with correctly shaped Hindi text."""
+    # NEW: 3 rotating designs (thumbnail_maker.py). Hindi -> Noto Devanagari,
+    # English/digits -> Poppins, so words like "IND-W vs SL-W" never show boxes.
+    try:
+        from thumbnail_maker import make_thumbnail
+        hero = _article_hero_image(article_url, video_path=video_path)
+        return make_thumbnail(
+            title, article_url, out_path=output_path,
+            out_dir=os.path.dirname(output_path) or ".",
+            news_image=hero, presenter=_load_presenter_cutout()
+        )
+    except Exception as new_thumb_error:
+        print(f"⚠️ Naya thumbnail maker fail ({new_thumb_error}); purana design use ho raha hai.")
+        import traceback
+        traceback.print_exc()
+
     W, H = 1280, 720
     canvas = Image.new("RGB", (W, H), (35, 0, 13))
     draw = ImageDraw.Draw(canvas)

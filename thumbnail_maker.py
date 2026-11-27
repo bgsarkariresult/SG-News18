@@ -15,7 +15,12 @@ import requests
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ANCHOR_PATH = os.path.join(HERE, "assets", "anchor.png")
+ANCHOR_CANDIDATES = [
+    os.getenv("SG_NEWS18_PRESENTER_FILE", ""),
+    os.path.join(HERE, "assets", "sg-news18-presenter.png"),
+    os.path.join(HERE, "assets", "anchor.png"),
+]
+_PRESENTER_OVERRIDE = None   # news_bot.py can pass an already loaded presenter image
 FONT_DIR = os.path.join(HERE, "fonts")
 STATE_FILE = os.path.join(HERE, ".thumb_index")
 
@@ -41,6 +46,7 @@ HINDI_SYSTEM_FONTS = [
     "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",   # last resort (has Devanagari)
 ]
 LATIN_FONTS = [
+    os.path.join(HERE, "fonts", "Poppins-Bold.ttf"),
     "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
@@ -100,11 +106,61 @@ def get_latin_font_path():
     return _font_cache["en"]
 
 
-def F(path, size):
+def _is_devanagari(ch):
+    return "\u0900" <= ch <= "\u097F" or ch in "\u200c\u200d"
+
+
+def _raw_font(path, px):
     try:
-        return ImageFont.truetype(path, int(size * S), layout_engine=ImageFont.Layout.RAQM)
+        return ImageFont.truetype(path, px, layout_engine=ImageFont.Layout.RAQM)
     except Exception:
-        return ImageFont.truetype(path, int(size * S))   # basic layout (matras may look off)
+        return ImageFont.truetype(path, px)       # basic layout (matras may look off)
+
+
+class MixedFont:
+    """Hindi letters -> Noto Sans Devanagari, everything else (English, digits,
+    punctuation) -> Poppins. Noto Devanagari has NO English letters, so a single
+    font shows empty boxes for words like 'IND-W vs SL-W'."""
+
+    def __init__(self, size):
+        px = int(size * S)
+        self.hi = _raw_font(get_hindi_font_path(), px)
+        self.en = _raw_font(get_latin_font_path(), max(8, int(px * 0.94)))
+
+    def runs(self, text):
+        out = []
+        for ch in text:
+            f = self.hi if _is_devanagari(ch) else self.en
+            if out and out[-1][0] is f:
+                out[-1][1] += ch
+            else:
+                out.append([f, ch])
+        return out
+
+    def length(self, d, text):
+        return sum(d.textlength(seg, font=f) for f, seg in self.runs(text))
+
+
+def F(path, size):
+    return MixedFont(size)
+
+
+def text_len(d, text, font):
+    return font.length(d, text)
+
+
+def draw_text(d, xy, text, font, fill=None, anchor="la", stroke_width=0, stroke_fill=None):
+    """Drop-in replacement for ImageDraw.text that understands MixedFont."""
+    x, y = xy
+    total = font.length(d, text)
+    h, v = anchor[0], anchor[1]
+    x0 = x - total / 2 if h == "m" else x - total if h == "r" else x
+    asc, desc = font.hi.getmetrics()
+    base = y + asc if v == "a" else y + (asc - desc) / 2 if v == "m" else y
+    for f, seg in font.runs(text):
+        d.text((x0, base), seg, font=f, fill=fill, anchor="ls",
+               stroke_width=stroke_width, stroke_fill=stroke_fill)
+        x0 += d.textlength(seg, font=f)
 
 
 # ------------------------------------------------------------------
@@ -116,7 +172,11 @@ _EMOJI = re.compile(
 
 
 def clean_title(title):
-    t = _EMOJI.sub("", title or "")
+    import unicodedata
+    t = " ".join(str(title or "").split())
+    t = "".join(ch for ch in t
+                if ch == "₹" or ch.isspace() or ch in "\u200c\u200d"
+                or unicodedata.category(ch)[0] in ("L", "M", "N", "P"))
     t = re.sub(r"\s+", " ", t).strip(" -|:•")
     return t or "ताज़ा खबर"
 
@@ -137,7 +197,7 @@ def wrap_text(draw, text, font, max_w):
     lines, cur = [], ""
     for w in text.split():
         t = (cur + " " + w).strip()
-        if draw.textlength(t, font=font) <= max_w * S:
+        if text_len(draw, t, font) <= max_w * S:
             cur = t
         else:
             if cur:
@@ -228,8 +288,17 @@ def glow_cutout(canvas, im, pos, color, blur=18, op=.9):
     canvas.alpha_composite(big.filter(ImageFilter.GaussianBlur(blur * S)))
 
 
+def _open_presenter():
+    if _PRESENTER_OVERRIDE is not None:
+        return _PRESENTER_OVERRIDE.convert("RGBA")
+    for p in ANCHOR_CANDIDATES:
+        if p and os.path.exists(p):
+            return Image.open(p).convert("RGBA")
+    raise FileNotFoundError("assets/sg-news18-presenter.png (ya assets/anchor.png) nahi mili")
+
+
 def load_anchor(height):
-    a = Image.open(ANCHOR_PATH).convert("RGBA")
+    a = _open_presenter()
     bb = a.split()[3].getbbox()
     if bb:
         a = a.crop(bb)
@@ -247,9 +316,9 @@ def rrect_mask(size, rad):
 def stroke_text(d, xy, t, f, fill, stroke=0, sfill=(0, 0, 0), anchor="la", shadow=None):
     x, y = xy
     if shadow:
-        d.text((x + shadow[0] * S, y + shadow[1] * S), t, font=f, fill=shadow[2], anchor=anchor,
+        draw_text(d, (x + shadow[0] * S, y + shadow[1] * S), t, font=f, fill=shadow[2], anchor=anchor,
                stroke_width=int(stroke * S), stroke_fill=shadow[2])
-    d.text((x, y), t, font=f, fill=fill, anchor=anchor, stroke_width=int(stroke * S), stroke_fill=sfill)
+    draw_text(d, (x, y), t, font=f, fill=fill, anchor=anchor, stroke_width=int(stroke * S), stroke_fill=sfill)
 
 
 def finish(canvas, out_path):
@@ -274,9 +343,9 @@ def design1(title, photo, out):
     d = ImageDraw.Draw(c)
     d.rectangle((0, 0, W * S, 12 * S), fill=YEL)
     d.rounded_rectangle((40 * S, 34 * S, 290 * S, 88 * S), 10 * S, fill=RED)
-    d.text((165 * S, 61 * S), "SG NEWS18", font=F(EN, 32), fill=WHITE, anchor="mm")
+    draw_text(d, (165 * S, 61 * S), "SG NEWS18", font=F(EN, 32), fill=WHITE, anchor="mm")
     d.rounded_rectangle((300 * S, 34 * S, 470 * S, 88 * S), 10 * S, fill=YEL)
-    d.text((385 * S, 61 * S), "ताज़ा खबर", font=F(HI, 32), fill=NAVY, anchor="mm")
+    draw_text(d, (385 * S, 61 * S), "ताज़ा खबर", font=F(HI, 32), fill=NAVY, anchor="mm")
 
     f, lines, size = fit_text(d, title, HI, 790, 200, 80, 44, 2, 1.22)
     y = 108 * S
@@ -300,8 +369,8 @@ def design1(title, photo, out):
     d = ImageDraw.Draw(c)
     d.rectangle((0, 650 * S, W * S, H * S), fill=(18, 0, 10))
     d.rectangle((0, 650 * S, 300 * S, H * S), fill=RED)
-    d.text((150 * S, 685 * S), "BREAKING", font=F(EN, 34), fill=WHITE, anchor="mm")
-    d.text((325 * S, 685 * S), "पूरी जानकारी वीडियो में", font=F(HI, 30), fill=YEL, anchor="lm")
+    draw_text(d, (150 * S, 685 * S), "BREAKING", font=F(EN, 34), fill=WHITE, anchor="mm")
+    draw_text(d, (325 * S, 685 * S), "पूरी जानकारी वीडियो में", font=F(HI, 30), fill=YEL, anchor="lm")
     d.rectangle((0, 646 * S, W * S, 650 * S), fill=YEL)
     return finish(c, out)
 
@@ -337,15 +406,15 @@ def design2(title, photo, out):
     y = (44 * S) if len(lines) * (bar_h + gap) < 560 * S else 20 * S
     for i, ln in enumerate(lines):
         fg, bg_col = (WHITE, RED) if i % 2 == 0 else (NAVY, YEL)
-        w = d.textlength(ln, font=f) + 44 * S
+        w = text_len(d, ln, f) + 44 * S
         sk = 22 * S
         d.polygon([(0, y), (w + sk, y), (w, y + bar_h), (0, y + bar_h)], fill=bg_col)
-        d.text((24 * S, y + bar_h / 2 + 3 * S), ln, font=f, fill=fg, anchor="lm", stroke_width=1 * S, stroke_fill=fg)
+        draw_text(d, (24 * S, y + bar_h / 2 + 3 * S), ln, font=f, fill=fg, anchor="lm", stroke_width=1 * S, stroke_fill=fg)
         y += bar_h + gap
 
     d.rectangle((0, 650 * S, W * S, H * S), fill=YEL)
-    d.text((40 * S, 685 * S), "SG NEWS18", font=F(EN, 36), fill=NAVY, anchor="lm")
-    d.text((W * S - 330 * S, 685 * S), "पूरी जानकारी वीडियो में", font=F(HI, 30), fill=NAVY, anchor="rm")
+    draw_text(d, (40 * S, 685 * S), "SG NEWS18", font=F(EN, 36), fill=NAVY, anchor="lm")
+    draw_text(d, (W * S - 330 * S, 685 * S), "पूरी जानकारी वीडियो में", font=F(HI, 30), fill=NAVY, anchor="rm")
     return finish(c, out)
 
 
@@ -377,19 +446,19 @@ def design3(title, photo, out):
 
     d = ImageDraw.Draw(c)
     d.rounded_rectangle((36 * S, 34 * S, 270 * S, 90 * S), 12 * S, fill=RED)
-    d.text((153 * S, 62 * S), "BREAKING", font=F(EN, 30), fill=WHITE, anchor="mm")
+    draw_text(d, (153 * S, 62 * S), "BREAKING", font=F(EN, 30), fill=WHITE, anchor="mm")
 
     num, label = find_number_badge(title)
     cx, cy, r = 700 * S, 150 * S, 92 * S
     d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=YEL, outline=WHITE, width=5 * S)
     if num:
         nf = F(EN, 50 if len(num) <= 4 else 40)
-        d.text((cx, cy - (16 * S if label else 0)), num, font=nf, fill=NAVY, anchor="mm")
+        draw_text(d, (cx, cy - (16 * S if label else 0)), num, font=nf, fill=NAVY, anchor="mm")
         if label:
-            d.text((cx, cy + 36 * S), label, font=F(HI, 38), fill=RED, anchor="mm", stroke_width=1 * S, stroke_fill=RED)
+            draw_text(d, (cx, cy + 36 * S), label, font=F(HI, 38), fill=RED, anchor="mm", stroke_width=1 * S, stroke_fill=RED)
     else:
-        d.text((cx, cy - 4 * S), "ताज़ा", font=F(HI, 40), fill=RED, anchor="mm", stroke_width=1 * S, stroke_fill=RED)
-        d.text((cx, cy + 36 * S), "खबर", font=F(HI, 40), fill=NAVY, anchor="mm", stroke_width=1 * S, stroke_fill=NAVY)
+        draw_text(d, (cx, cy - 4 * S), "ताज़ा", font=F(HI, 40), fill=RED, anchor="mm", stroke_width=1 * S, stroke_fill=RED)
+        draw_text(d, (cx, cy + 36 * S), "खबर", font=F(HI, 40), fill=NAVY, anchor="mm", stroke_width=1 * S, stroke_fill=NAVY)
 
     f, lines, size = fit_text(d, title, HI, 740, 290, 72, 42, 3, 1.3)
     total = len(lines) * size * 1.3
@@ -399,8 +468,8 @@ def design3(title, photo, out):
         y += int(size * 1.3 * S)
 
     d.rectangle((0, 650 * S, W * S, H * S), fill=(14, 0, 10))
-    d.text((36 * S, 685 * S), "SG NEWS18", font=F(EN, 34), fill=YEL, anchor="lm")
-    d.text((330 * S, 685 * S), "आख़िरी तारीख मत भूलिए — पूरी जानकारी देखें", font=F(HI, 28), fill=WHITE, anchor="lm")
+    draw_text(d, (36 * S, 685 * S), "SG NEWS18", font=F(EN, 34), fill=YEL, anchor="lm")
+    draw_text(d, (330 * S, 685 * S), "आख़िरी तारीख मत भूलिए — पूरी जानकारी देखें", font=F(HI, 28), fill=WHITE, anchor="lm")
     return finish(c, out)
 
 
@@ -471,16 +540,19 @@ def fetch_news_image(article_url):
 # Public API
 # ------------------------------------------------------------------
 def make_thumbnail(title, article_url=None, out_dir="bot_outputs", filename_base="thumb",
-                   news_image=None, design=None):
+                   news_image=None, design=None, out_path=None, presenter=None):
     """Thumbnail banata hai (JPEG, 1280x720) aur path return karta hai.
     design: 1/2/3 force karne ke liye, warna rotation (bari-bari)."""
+    global _PRESENTER_OVERRIDE
+    if presenter is not None:
+        _PRESENTER_OVERRIDE = presenter
     os.makedirs(out_dir, exist_ok=True)
     title = clean_title(title)
     idx = (design - 1) if design else next_design_index()
     photo = news_image if news_image is not None else fetch_news_image(article_url)
     if photo is None:
         photo = generated_photo(W * S, H * S, seed=len(title))
-    out = os.path.join(out_dir, f"{filename_base}_thumbnail.jpg")
+    out = out_path or os.path.join(out_dir, f"{filename_base}_thumbnail.jpg")
     DESIGNS[idx](title, photo, out)
     print(f"🖼️ Thumbnail ready (Design {idx + 1}): {out}")
     return out
